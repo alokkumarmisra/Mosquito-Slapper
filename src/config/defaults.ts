@@ -102,9 +102,9 @@ export const DEFAULT_SETTINGS: GameSettings = {
   cameraFacing: 'user',
   resolution: '1080p',
   mirrorCamera: true,
-  showLandmarks: true,
-  showHandPointer: true,
-  showFaceZones: true,
+  showLandmarks: false,
+  showHandPointer: false,
+  showFaceZones: false,
   enableFaceLanding: true,
   showHitboxes: false,
   practiceMode: false,
@@ -146,13 +146,28 @@ export const DEFAULT_SETTINGS: GameSettings = {
 };
 
 const STORAGE_KEY = 'ai_mosquito_slapper_settings_v1';
+const OVERLAY_DEFAULTS_MIGRATION_KEY = 'ai_mosquito_slapper_overlay_defaults_off_v1';
 
 export function loadLocalSettings(): GameSettings {
   try {
     const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return structuredClone(DEFAULT_SETTINGS);
+    if (!raw) {
+      window.localStorage.setItem(OVERLAY_DEFAULTS_MIGRATION_KEY, '1');
+      return structuredClone(DEFAULT_SETTINGS);
+    }
     const parsed = JSON.parse(raw) as Partial<GameSettings>;
-    return mergeSettings(DEFAULT_SETTINGS, parsed);
+    const merged = mergeSettings(DEFAULT_SETTINGS, parsed);
+
+    // One-time migration so browsers with old auto-saved defaults start with overlays OFF
+    if (!window.localStorage.getItem(OVERLAY_DEFAULTS_MIGRATION_KEY)) {
+      merged.showLandmarks = false;
+      merged.showHandPointer = false;
+      merged.showFaceZones = false;
+      window.localStorage.setItem(OVERLAY_DEFAULTS_MIGRATION_KEY, '1');
+      window.localStorage.setItem(STORAGE_KEY, JSON.stringify(merged));
+    }
+
+    return merged;
   } catch {
     return structuredClone(DEFAULT_SETTINGS);
   }

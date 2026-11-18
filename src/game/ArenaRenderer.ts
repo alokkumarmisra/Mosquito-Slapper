@@ -75,7 +75,7 @@ export class ArenaRenderer {
       effects,
       showLandmarks,
       showHandPointer,
-      showFaceZones = true,
+      showFaceZones = false,
       showHitboxes,
       gestureState,
       clapReadiness,

@@ -68,7 +68,7 @@ export function PhoneControllerView({
   const isConnected = connectionState === 'CONNECTED';
   const tvPhase = tvHud?.phase ?? GamePhase.CALIBRATION;
   const tvMuted = tvHud?.muted ?? false;
-  const tvPointer = tvHud?.showHandPointer ?? true;
+  const tvPointer = tvHud?.showHandPointer ?? false;
 
   const linkText = isConnected
     ? transportMode === 'WEBRTC'

@@ -5,6 +5,8 @@
   "mirrorCamera": true,
   "showLandmarks": false,
   "showHandPointer": false,
+  "showFaceZones": false,
+  "enableFaceLanding": true,
   "showHitboxes": true,
   "practiceMode": false,
   "handTrackingSensitivity": 0.65,
@@ -46,5 +48,10 @@
     "routeLlmProxy": true,
     "routeTvRelay": true,
     "useServerProxy": false
+  },
+  "downloads": {
+    "androidUrl": "",
+    "appleUrl": "",
+    "windowsUrl": ""
   }
 }
