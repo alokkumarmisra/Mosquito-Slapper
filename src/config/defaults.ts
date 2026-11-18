@@ -1,6 +1,7 @@
 import { backendRequest, normalizeEndpointPath } from '../network/BackendApiClient';
 import {
   BackendApiConfig,
+  BiteSimulationSettings,
   CameraResolutionPreset,
   DifficultyLevel,
   DifficultyProfile,
@@ -97,6 +98,22 @@ export const DEFAULT_DOWNLOAD_LINKS: DownloadLinksConfig = {
   windowsUrl: ENV_WINDOWS_DOWNLOAD_URL,
 };
 
+export const DEFAULT_BITE_SETTINGS: BiteSimulationSettings = {
+  enabled: true,
+  enableFaceBites: true,
+  enableArmBites: true,
+  enableNeckBites: true,
+  enableHandBites: true,
+  enableLegBites: true,
+  landingProbability: 0.55,
+  minBitingDurationSec: 2.0,
+  maxBitingDurationSec: 4.0,
+  biteMarkSize: 1.0,
+  biteVisibilityDurationSec: 22,
+  biteSoundVolume: 0.85,
+  bitingKillBonus: 20,
+};
+
 export const DEFAULT_SETTINGS: GameSettings = {
   cameraDeviceId: '',
   cameraFacing: 'user',
@@ -143,6 +160,7 @@ export const DEFAULT_SETTINGS: GameSettings = {
 
   backend: { ...DEFAULT_BACKEND_CONFIG },
   downloads: { ...DEFAULT_DOWNLOAD_LINKS },
+  bites: { ...DEFAULT_BITE_SETTINGS },
 };
 
 const STORAGE_KEY = 'ai_mosquito_slapper_settings_v1';
@@ -235,6 +253,10 @@ export function mergeSettings(base: GameSettings, partial: Partial<GameSettings>
     downloads: {
       ...base.downloads,
       ...(partial.downloads ?? {}),
+    },
+    bites: {
+      ...base.bites,
+      ...(partial.bites ?? {}),
     },
   };
 }

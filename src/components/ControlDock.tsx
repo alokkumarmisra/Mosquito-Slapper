@@ -11,6 +11,7 @@ import {
   Plus,
   RotateCcw,
   Settings,
+  ShieldAlert,
   SlidersHorizontal,
   SwitchCamera,
   Trophy,
@@ -31,6 +32,8 @@ interface ControlDockProps {
   showHandPointer: boolean;
   isFullscreen: boolean;
   livingCount: number;
+  totalBites: number;
+  activeBiteMarks: number;
   cameraFacing: CameraFacingMode;
   deviceRole: DeviceRole;
   roomCode: string | null;
@@ -49,6 +52,7 @@ interface ControlDockProps {
   onToggleMute: () => void;
   onToggleHandPointer: () => void;
   onFlipCamera: () => void;
+  onOpenBiteHistory: () => void;
   onOpenTvCast: () => void;
   onOpenDownloads: () => void;
   onOpenSettings: () => void;
@@ -72,6 +76,8 @@ export function ControlDock({
   showHandPointer,
   isFullscreen,
   livingCount,
+  totalBites,
+  activeBiteMarks,
   cameraFacing,
   deviceRole,
   roomCode,
@@ -90,6 +96,7 @@ export function ControlDock({
   onToggleMute,
   onToggleHandPointer,
   onFlipCamera,
+  onOpenBiteHistory,
   onOpenTvCast,
   onOpenDownloads,
   onOpenSettings,
@@ -462,6 +469,21 @@ export function ControlDock({
 
             <button
               type="button"
+              onClick={onOpenBiteHistory}
+              className={`inline-flex h-9 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                activeBiteMarks > 0
+                  ? 'border-[#FB7185]/45 bg-[#2A171C] text-[#FDA4AF] hover:bg-[#381E24]'
+                  : 'border-white/10 bg-[#1B231E] text-slate-200 hover:bg-[#253029]'
+              }`}
+              aria-label="Open mosquito bite counter and history"
+              title={`Bite Counter & History (${totalBites} total, ${activeBiteMarks} active)`}
+            >
+              <ShieldAlert className={`h-3.5 w-3.5 shrink-0 ${activeBiteMarks > 0 ? 'text-[#FB7185]' : 'text-slate-300'}`} />
+              <span className="font-mono tabular-nums">{totalBites}</span>
+            </button>
+
+            <button
+              type="button"
               onClick={onOpenLeaderboard}
               className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#1B231E] text-[#FF8A5C] transition-colors hover:bg-[#253029] shrink-0 cursor-pointer"
               aria-label="Open leaderboard"
@@ -711,6 +733,22 @@ export function ControlDock({
               >
                 <Trophy className="h-4 w-4 shrink-0 text-[#FF6B35]" />
                 Leaderboard
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setMobileSheetOpen(false);
+                  onOpenBiteHistory();
+                }}
+                className={`inline-flex h-11 items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold whitespace-nowrap cursor-pointer ${
+                  activeBiteMarks > 0
+                    ? 'border-[#FB7185]/45 bg-[#2A171C] text-[#FDA4AF]'
+                    : 'border-white/12 bg-[#1B231E] text-[#F4F7F2]'
+                }`}
+              >
+                <ShieldAlert className="h-4 w-4 shrink-0 text-[#FB7185]" />
+                Bite History ({totalBites})
               </button>
 
               <button

@@ -37,6 +37,33 @@ export interface Point3D {
 
 export type FaceLandingZone = 'HEAD' | 'FOREHEAD' | 'NOSE' | 'LEFT_CHEEK' | 'RIGHT_CHEEK';
 
+export type BodyRegionCategory = 'FACE' | 'NECK' | 'ARM' | 'HAND' | 'LEG';
+
+export type BodyRegionId =
+  | 'HEAD'
+  | 'FOREHEAD'
+  | 'LEFT_CHEEK'
+  | 'RIGHT_CHEEK'
+  | 'NOSE'
+  | 'CHIN'
+  | 'NECK'
+  | 'LEFT_SHOULDER'
+  | 'RIGHT_SHOULDER'
+  | 'LEFT_UPPER_ARM'
+  | 'RIGHT_UPPER_ARM'
+  | 'LEFT_ELBOW'
+  | 'RIGHT_ELBOW'
+  | 'LEFT_FOREARM'
+  | 'RIGHT_FOREARM'
+  | 'LEFT_HAND'
+  | 'RIGHT_HAND'
+  | 'LEFT_THIGH'
+  | 'RIGHT_THIGH'
+  | 'LEFT_KNEE'
+  | 'RIGHT_KNEE'
+  | 'LEFT_SHIN'
+  | 'RIGHT_SHIN';
+
 export interface FaceZoneAnchor {
   zone: FaceLandingZone;
   label: string;
@@ -51,6 +78,8 @@ export interface FaceAnchor {
   leftEar: Point2D;
   rightEar: Point2D;
   earRadius: number;
+  /** Recognized chin landmark in canvas-normalized coordinates (0..1) */
+  chin?: Point2D;
   /** Recognized anatomical landing zones in canvas-normalized coordinates (0..1) */
   zones: Record<FaceLandingZone, FaceZoneAnchor>;
   /** Compact head/face contour points for subtle AR face-zone recognition overlay */
@@ -60,12 +89,143 @@ export interface FaceAnchor {
   lastSeen: number;
 }
 
-export interface FaceLandingEvent {
-  type: 'LANDED' | 'TOOK_OFF';
+export interface BodyLandmarkReference {
+  source: 'FACE' | 'POSE' | 'HAND';
+  region: BodyRegionId;
+  primaryIndex: number;
+  secondaryIndex?: number;
+  segmentT?: number;
+  /** Offset in anchor-local rotated frame (normalized coords) so bites follow head/limb tilt */
+  localOffset: Point2D;
+  /** Anchor scale at time of bite so swelling rescales smoothly with player distance */
+  referenceScale: number;
+}
+
+export interface BodyRegionAnchor {
+  region: BodyRegionId;
+  category: BodyRegionCategory;
+  label: string;
+  point: Point2D;
+  axisAngleRad: number;
+  scale: number;
+  visibility: number;
+  source: 'FACE' | 'POSE' | 'HAND';
+  primaryLandmarkIndex: number;
+  secondaryLandmarkIndex?: number;
+  segmentStart?: Point2D;
+  segmentEnd?: Point2D;
+}
+
+export interface PoseLandmarkPoint {
+  x: number;
+  y: number;
+  z: number;
+  visibility: number;
+}
+
+export interface BodyTrackingFrame {
+  regions: Partial<Record<BodyRegionId, BodyRegionAnchor>>;
+  visibleRegions: BodyRegionId[];
+  poseLandmarks: PoseLandmarkPoint[];
+  poseDetected: boolean;
+  segmentationActive: boolean;
+  bodyScale: number;
+  lastSeen: number;
+}
+
+export type BiteVisualStyle =
+  | 'SMALL_RED_CIRCLE'
+  | 'RAISED_BUMP'
+  | 'SWOLLEN_PATCH'
+  | 'PULSATING_MARK'
+  | 'ITCHING_MARK';
+
+export type BiteAnimationState = 'APPEARING' | 'ACTIVE' | 'HEALING' | 'HEALED';
+
+export type HealingStatus = 'FRESH' | 'INFLAMED' | 'FADING' | 'HEALED';
+
+export interface BiteRecord {
+  id: string;
   mosquitoId: string;
-  zone: FaceLandingZone;
+  region: BodyRegionId;
+  regionLabel: string;
+  category: BodyRegionCategory;
+  landmarkRef: BodyLandmarkReference;
+  /** Live normalized webcam/canvas coordinates (0..1) */
+  normalizedX: number;
+  normalizedY: number;
+  timestamp: number;
+  createdAtPerfMs: number;
+  swellingSize: number;
+  swellingIntensity: number;
+  visualStyle: BiteVisualStyle;
+  animationState: BiteAnimationState;
+  healingStatus: HealingStatus;
+  opacity: number;
+  depthScale: number;
+  visibilityDurationMs: number;
+  attachedVisible: boolean;
+  killedDuringBite: boolean;
+}
+
+export interface BiteStatistics {
+  totalBites: number;
+  activeBiteMarks: number;
+  faceBites: number;
+  armBites: number;
+  neckBites: number;
+  handBites: number;
+  legBites: number;
+  bitesPerMosquito: Record<string, number>;
+  bitesByRegion: Partial<Record<BodyRegionId, number>>;
+  mostBittenRegion: BodyRegionId | null;
+  mostBittenRegionLabel: string;
+  mostBittenRegionCount: number;
+  bitingKills: number;
+}
+
+export interface BiteNotification {
+  id: string;
+  message: string;
+  regionLabel: string;
+  category: BodyRegionCategory;
+  createdAt: number;
+  kind: 'BITE' | 'BITING_KILL' | 'ESCAPE';
+}
+
+export interface BiteSimulationSettings {
+  enabled: boolean;
+  enableFaceBites: boolean;
+  enableArmBites: boolean;
+  enableNeckBites: boolean;
+  enableHandBites: boolean;
+  enableLegBites: boolean;
+  /** 0.05 .. 1.0 probability weight for mosquitoes choosing to land & bite */
+  landingProbability: number;
+  /** Minimum biting duration in seconds (default 2s) */
+  minBitingDurationSec: number;
+  /** Maximum biting duration in seconds (default 4s) */
+  maxBitingDurationSec: number;
+  /** Relative visual size multiplier for bite swelling marks (0.5 .. 2.0) */
+  biteMarkSize: number;
+  /** How long each bite swelling remains visible before healing (seconds) */
+  biteVisibilityDurationSec: number;
+  /** Dedicated volume for bite reactions & escape laughs (0 .. 1) */
+  biteSoundVolume: number;
+  /** Special bonus points awarded for slapping a mosquito while it is biting */
+  bitingKillBonus: number;
+}
+
+export interface FaceLandingEvent {
+  type: 'LANDED' | 'BITE_CONFIRMED' | 'ESCAPED_AFTER_BITE' | 'TOOK_OFF';
+  mosquitoId: string;
+  zone?: FaceLandingZone;
+  region: BodyRegionId;
+  category: BodyRegionCategory;
   zoneLabel: string;
   point: Point2D;
+  landmarkRef?: BodyLandmarkReference;
+  depthScale?: number;
 }
 
 export interface TrackedHand {
@@ -109,6 +269,8 @@ export interface AttackEvent {
   handSide?: HandSide | 'Both';
   /** When the player directly smacks a recognized facial zone (head, forehead, nose, cheek) */
   faceZone?: FaceLandingZone;
+  /** When the player directly smacks a recognized body region (face, neck, arm, hand, leg) */
+  bodyRegion?: BodyRegionId;
 }
 
 export type FlightPattern =
@@ -173,14 +335,22 @@ export interface MosquitoEntity {
   /** Optional funny taunt bubble */
   tauntText?: string;
   tauntExpiresAt?: number;
-  /** Periodic random face-landing state (head, forehead, nose, cheeks) */
+  /** Periodic random face/body landing & biting state */
   landingZone?: FaceLandingZone;
+  landingBodyRegion?: BodyRegionId;
+  landingBodyCategory?: BodyRegionCategory;
+  landingBodyLabel?: string;
+  landingLandmarkRef?: BodyLandmarkReference;
   landingOffset?: Point2D;
   landingTimer?: number;
   landingDuration?: number;
   landingProgress?: number;
   bitePulsePhase?: number;
   landedAngleOffset?: number;
+  biteTriggerTimeSec?: number;
+  biteConfirmed?: boolean;
+  biteConfirmedAt?: number;
+  activeBiteId?: string;
 }
 
 export interface SwarmAcousticMetrics {
@@ -206,6 +376,7 @@ export interface VisualEffect {
   comicWord?: string;
   scale?: number;
   faceZone?: FaceLandingZone;
+  bodyRegion?: BodyRegionId;
 }
 
 export interface HitResolution {
@@ -355,6 +526,9 @@ export interface GameSettings {
 
   /** Custom Platform Download Links (Android / Apple / Windows) */
   downloads: DownloadLinksConfig;
+
+  /** Body Bite Simulation Settings */
+  bites: BiteSimulationSettings;
 }
 
 export interface GameStats {

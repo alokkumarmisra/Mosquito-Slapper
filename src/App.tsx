@@ -24,8 +24,8 @@ import {
   updateGuestDisplayName,
 } from './auth/PlayerSessionService';
 import { AccountModal } from './components/AccountModal';
+import { BiteHistoryPanel } from './components/BiteHistoryPanel';
 import { CalibrationOverlay } from './components/CalibrationOverlay';
-import { ControlDock } from './components/ControlDock';
 import { DownloadAppsModal } from './components/DownloadAppsModal';
 import { GameHud } from './components/GameHud';
 import { GameOverModal } from './components/GameOverModal';
@@ -42,6 +42,7 @@ import {
   saveLocalSettings,
 } from './config/defaults';
 import { ArenaRenderer } from './game/ArenaRenderer';
+import { BiteLocationManager, createEmptyBiteStatistics } from './game/BiteLocationManager';
 import { CollisionEngine } from './game/CollisionEngine';
 import { computeAutoDifficulty, MosquitoEngine } from './game/MosquitoEngine';
 import { useWakeLock } from './hooks/usePWAInstall';
@@ -57,6 +58,11 @@ import {
   ActiveChallenge,
   AttackEvent,
   BackendConnectionStatus,
+  BiteNotification,
+  BiteRecord,
+  BiteStatistics,
+  BodyRegionId,
+  BodyTrackingFrame,
   CameraDeviceOption,
   CompanionConnectionState,
   DeviceRole,
@@ -78,6 +84,12 @@ import {
   VisionEngineMode,
   VisualEffect,
 } from './types/game';
+import {
+  BODY_REGION_CATEGORY,
+  BODY_REGION_LABELS,
+  BodyTracker,
+  createEmptyBodyTrackingFrame,
+} from './vision/BodyTracker';
 import { createDefaultFaceAnchor, FACE_ZONE_LABELS, FaceTracker } from './vision/FaceTracker';
 import { GestureStateMachine } from './vision/GestureStateMachine';
 import { HandTracker } from './vision/HandTracker';
@@ -163,12 +175,22 @@ export default function App() {
   const [visionMode, setVisionMode] = useState<VisionEngineMode>('INITIALIZING');
 
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [biteHistoryOpen, setBiteHistoryOpen] = useState(false);
   const [tvModalOpen, setTvModalOpen] = useState(false);
   const [downloadsOpen, setDownloadsOpen] = useState(false);
   const [downloadPlatformFocus, setDownloadPlatformFocus] = useState<DownloadPlatform | null>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [accountModalTab, setAccountModalTab] = useState<AccountModalTab>('profile');
   const [isFullscreen, setIsFullscreen] = useState(false);
+
+  // Body Bite Simulation live state (100% local, zero cloud dependencies)
+  const [biteStats, setBiteStats] = useState<BiteStatistics>(() => createEmptyBiteStatistics());
+  const [biteHistory, setBiteHistory] = useState<BiteRecord[]>([]);
+  const [biteNotification, setBiteNotification] = useState<BiteNotification | null>(null);
+  const [bodyTrackingInfo, setBodyTrackingInfo] = useState<{
+    poseDetected: boolean;
+    visibleRegionCount: number;
+  }>({ poseDetected: false, visibleRegionCount: 0 });
 
   // Instant Guest Mode + Optional Firebase Google Auth (zero blocking on load)
   const [guestProfile, setGuestProfile] = useState<GuestProfile>(() => loadGuestProfile());
@@ -225,6 +247,8 @@ export default function App() {
   const webcamMgrRef = useRef<WebcamManager | null>(null);
   const handTrackerRef = useRef<HandTracker | null>(null);
   const faceTrackerRef = useRef<FaceTracker | null>(null);
+  const bodyTrackerRef = useRef<BodyTracker>(new BodyTracker());
+  const biteManagerRef = useRef<BiteLocationManager>(new BiteLocationManager());
   const gestureFsmRef = useRef<GestureStateMachine>(new GestureStateMachine());
   const mosquitoEngineRef = useRef<MosquitoEngine>(new MosquitoEngine());
   const collisionEngineRef = useRef<CollisionEngine>(new CollisionEngine());
@@ -251,6 +275,13 @@ export default function App() {
   const phoneFxRef = useRef<VisualEffect[]>([]);
   const effectSeqRef = useRef(0);
   const latestHandsRef = useRef<TrackedHand[]>([]);
+  const bodyFrameRef = useRef<BodyTrackingFrame>(createEmptyBodyTrackingFrame());
+  const biteNotifTimerRef = useRef<number | null>(null);
+  const biteStatsSyncRef = useRef<{ total: number; active: number; kills: number }>({
+    total: 0,
+    active: 0,
+    kills: 0,
+  });
   const calibrationRef = useRef(0);
   const swarmClearTimerRef = useRef<number | null>(null);
   const lastTauntTimeRef = useRef(0);
@@ -291,6 +322,7 @@ export default function App() {
     soundMgrRef.current.configure({
       sfxVolume: settings.sfxVolume,
       buzzVolume: settings.buzzVolume,
+      biteSoundVolume: settings.bites.biteSoundVolume,
       muted: settings.muted,
       enableMissVoice: settings.enableMissVoice,
     });
@@ -712,6 +744,7 @@ export default function App() {
       );
       setVisionMode(mode);
       await faceTrackerRef.current.initialize();
+      await bodyTrackerRef.current.initialize();
     } else {
       setWebcamActive(false);
       setWebcamError(result.error);
@@ -739,9 +772,13 @@ export default function App() {
       webcamMgrRef.current?.stop();
       handTrackerRef.current?.dispose();
       faceTrackerRef.current?.dispose();
+      bodyTrackerRef.current.dispose();
       soundMgrRef.current.dispose();
       if (swarmClearTimerRef.current !== null) {
         window.clearTimeout(swarmClearTimerRef.current);
+      }
+      if (biteNotifTimerRef.current !== null) {
+        window.clearTimeout(biteNotifTimerRef.current);
       }
     };
   }, []);
@@ -835,6 +872,39 @@ export default function App() {
     }
   }, []);
 
+  const showBiteNotification = useCallback((notif: BiteNotification, durationMs = 3600) => {
+    if (biteNotifTimerRef.current !== null) {
+      window.clearTimeout(biteNotifTimerRef.current);
+      biteNotifTimerRef.current = null;
+    }
+    setBiteNotification(notif);
+    biteNotifTimerRef.current = window.setTimeout(() => {
+      setBiteNotification(null);
+      biteNotifTimerRef.current = null;
+    }, durationMs);
+  }, []);
+
+  const syncBiteUiState = useCallback((nextStats?: BiteStatistics) => {
+    const resolved = nextStats ?? biteManagerRef.current.getStatistics();
+    biteStatsSyncRef.current = {
+      total: resolved.totalBites,
+      active: resolved.activeBiteMarks,
+      kills: resolved.bitingKills,
+    };
+    setBiteStats(resolved);
+    setBiteHistory([...biteManagerRef.current.getAllBites()]);
+  }, []);
+
+  const handleResetBiteMarks = useCallback(() => {
+    const nextStats = biteManagerRef.current.clearActiveBiteMarks();
+    syncBiteUiState(nextStats);
+    if (biteNotifTimerRef.current !== null) {
+      window.clearTimeout(biteNotifTimerRef.current);
+      biteNotifTimerRef.current = null;
+    }
+    setBiteNotification(null);
+  }, [syncBiteUiState]);
+
   // Trigger Game Over and ask local LLM for async debrief
   const finishGame = useCallback((clearedAll: boolean) => {
     if (swarmClearTimerRef.current !== null) {
@@ -845,7 +915,9 @@ export default function App() {
     setPhase(GamePhase.GAME_OVER);
     setSwarmCleared(clearedAll);
     soundMgrRef.current.stopBuzzing();
+    soundMgrRef.current.stopBitingSound();
     soundMgrRef.current.playGameOver();
+    syncBiteUiState();
 
     const snapshot = { ...statsRef.current };
     setStats(snapshot);
@@ -926,7 +998,7 @@ export default function App() {
         setScoreSyncStatus('Saved locally in browser.');
       }
     }
-  }, []);
+  }, [syncBiteUiState]);
 
   // Process a confirmed CLAP or SLAP attack through deterministic CollisionEngine
   const resolveAttack = useCallback(
@@ -1002,25 +1074,46 @@ export default function App() {
       // Hit confirmed! Kill ONLY the intersected mosquitoes
       const killCount = resolution.killedMosquitoes.length;
       const rescuedZones: FaceLandingZone[] = [];
+      const bitingKillRegions: BodyRegionId[] = [];
+      let latestBiteStats: BiteStatistics | null = null;
+
       for (const hitMosq of resolution.killedMosquitoes) {
-        const hitFaceZone =
-          hitMosq.landingZone &&
-          (hitMosq.animState === 'LANDED' || hitMosq.animState === 'APPROACHING_LANDING')
+        const wasActivelyBiting =
+          hitMosq.animState === 'LANDED' &&
+          Boolean(hitMosq.landingBodyRegion || hitMosq.landingZone);
+        const approachingFaceZone =
+          hitMosq.animState === 'APPROACHING_LANDING' && hitMosq.landingZone
             ? hitMosq.landingZone
             : undefined;
-        if (hitFaceZone) {
-          rescuedZones.push(hitFaceZone);
+        const hitBodyRegion: BodyRegionId | undefined =
+          hitMosq.animState === 'LANDED' || hitMosq.animState === 'APPROACHING_LANDING'
+            ? (hitMosq.landingBodyRegion ?? hitMosq.landingZone)
+            : undefined;
+
+        if (wasActivelyBiting && hitBodyRegion) {
+          // Stop biting sound immediately, keep any existing bite mark visible, and count mid-bite kill!
+          soundMgrRef.current.stopBitingSound();
+          latestBiteStats = biteManagerRef.current.markKilledDuringBite(hitMosq.activeBiteId);
+          bitingKillRegions.push(hitBodyRegion);
+        } else if (approachingFaceZone) {
+          rescuedZones.push(approachingFaceZone);
+        }
+
+        if (hitBodyRegion) {
           pushEffect({
             kind: 'FACE_ZONE_RIPPLE',
             x: hitMosq.x,
             y: hitMosq.y,
             createdAt: nowMs,
             durationMs: 680,
-            color: '#FF6B35',
+            color: wasActivelyBiting ? '#FB7185' : '#FF6B35',
             scale: Math.max(0.85, Math.min(1.35, hitMosq.depthScale)),
-            faceZone: hitFaceZone,
+            faceZone: hitMosq.landingZone,
+            bodyRegion: hitBodyRegion,
           });
         }
+
+        // Kill removes the mosquito from its landing spot & halts biting animation immediately
         mosquitoEngineRef.current.killMosquito(hitMosq.id);
         const comicWord = COMIC_HIT_WORDS[Math.floor(Math.random() * COMIC_HIT_WORDS.length)];
         pushEffect({
@@ -1035,8 +1128,14 @@ export default function App() {
         });
       }
 
+      if (latestBiteStats) {
+        syncBiteUiState(latestBiteStats);
+      }
+
+      const perBitingKillBonus = Math.max(0, settingsRef.current.bites.bitingKillBonus);
+      const bitingKillBonusTotal = bitingKillRegions.length * perBitingKillBonus;
       const faceSaveBonus = rescuedZones.length * 15;
-      const totalPointsAwarded = resolution.pointsAwarded + faceSaveBonus;
+      const totalPointsAwarded = resolution.pointsAwarded + bitingKillBonusTotal + faceSaveBonus;
 
       nextStats.successfulAttacks += 1;
       nextStats.mosquitoesKilled += killCount;
@@ -1098,11 +1197,22 @@ export default function App() {
       setStats(nextStats);
 
       soundMgrRef.current.playKillSound(killCount);
+      if (bitingKillBonusTotal > 0) {
+        soundMgrRef.current.playBitingKillBonusSound();
+      }
       if (resolution.comboBonus > 0) {
         soundMgrRef.current.playComboAchievement();
       }
 
       const bonusTags: string[] = [];
+      if (bitingKillRegions.length > 0) {
+        const regionName = BODY_REGION_LABELS[bitingKillRegions[0]].toUpperCase();
+        bonusTags.push(
+          bitingKillRegions.length === 1
+            ? `CAUGHT BITING ${regionName} +${bitingKillBonusTotal}`
+            : `CAUGHT BITING x${bitingKillRegions.length} +${bitingKillBonusTotal}`,
+        );
+      }
       if (rescuedZones.length > 0) {
         const zoneName = FACE_ZONE_LABELS[rescuedZones[0]].toUpperCase();
         bonusTags.push(
@@ -1128,7 +1238,24 @@ export default function App() {
         color: bonusTags.length > 0 ? '#FF6B35' : '#C8F542',
       });
 
-      if (rescuedZones.length > 0) {
+      if (bitingKillRegions.length > 0) {
+        const firstRegion = bitingKillRegions[0];
+        const firstLabel = BODY_REGION_LABELS[firstRegion];
+        setCommentary(
+          `Caught red-handed! Swatted a biting mosquito on your ${firstLabel.toLowerCase()} (+${bitingKillBonusTotal} bonus)!`,
+        );
+        showBiteNotification(
+          {
+            id: `bkill-${nowMs}`,
+            message: `CAUGHT BITING! +${bitingKillBonusTotal} pts on your ${firstLabel.toUpperCase()}!`,
+            regionLabel: firstLabel,
+            category: BODY_REGION_CATEGORY[firstRegion],
+            createdAt: nowMs,
+            kind: 'BITING_KILL',
+          },
+          3000,
+        );
+      } else if (rescuedZones.length > 0) {
         setCommentary(
           `Quick reflex! Swatted a mosquito right off your ${FACE_ZONE_LABELS[rescuedZones[0]].toLowerCase()} (+${faceSaveBonus} Face Save)!`,
         );
@@ -1172,12 +1299,13 @@ export default function App() {
         }, 950);
       }
     },
-    [finishGame, pushEffect],
+    [finishGame, pushEffect, showBiteNotification, syncBiteUiState],
   );
 
   // Start / Restart game helper
   const startNewGame = useCallback(() => {
     soundMgrRef.current.unlock();
+    soundMgrRef.current.stopBitingSound();
     soundMgrRef.current.playGameStart();
 
     if (swarmClearTimerRef.current !== null) {
@@ -1195,6 +1323,15 @@ export default function App() {
     effectsRef.current = [];
     mosquitoEngineRef.current.setPatternBias({});
     mosquitoEngineRef.current.reset(initialCount, vw, vh, startDiff);
+
+    // Clear session bite history & active virtual marks on new game
+    const freshBites = biteManagerRef.current.resetSession();
+    syncBiteUiState(freshBites);
+    if (biteNotifTimerRef.current !== null) {
+      window.clearTimeout(biteNotifTimerRef.current);
+      biteNotifTimerRef.current = null;
+    }
+    setBiteNotification(null);
 
     const freshStats = createInitialStats(initialCount);
     statsRef.current = freshStats;
@@ -1219,7 +1356,7 @@ export default function App() {
       activeChallengeRef.current = chal;
       setActiveChallenge(chal);
     });
-  }, []);
+  }, [syncBiteUiState]);
 
   const handleResetToCalibration = useCallback(() => {
     if (swarmClearTimerRef.current !== null) {
@@ -1227,8 +1364,16 @@ export default function App() {
       swarmClearTimerRef.current = null;
     }
     soundMgrRef.current.stopBuzzing();
+    soundMgrRef.current.stopBitingSound();
     gestureFsmRef.current.reset();
     effectsRef.current = [];
+    const freshBites = biteManagerRef.current.resetSession();
+    syncBiteUiState(freshBites);
+    if (biteNotifTimerRef.current !== null) {
+      window.clearTimeout(biteNotifTimerRef.current);
+      biteNotifTimerRef.current = null;
+    }
+    setBiteNotification(null);
     const canvas = canvasRef.current;
     mosquitoEngineRef.current.reset(
       settingsRef.current.initialMosquitoCount,
@@ -1245,13 +1390,14 @@ export default function App() {
     activeChallengeRef.current = null;
     phaseRef.current = GamePhase.CALIBRATION;
     setPhase(GamePhase.CALIBRATION);
-  }, []);
+  }, [syncBiteUiState]);
 
   const handlePauseToggle = useCallback(() => {
     if (phaseRef.current === GamePhase.PLAYING) {
       phaseRef.current = GamePhase.PAUSED;
       setPhase(GamePhase.PAUSED);
       soundMgrRef.current.stopBuzzing();
+      soundMgrRef.current.stopBitingSound();
     } else if (phaseRef.current === GamePhase.PAUSED) {
       soundMgrRef.current.unlock();
       phaseRef.current = GamePhase.PLAYING;
@@ -1420,6 +1566,7 @@ export default function App() {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         setSettingsOpen(false);
+        setBiteHistoryOpen(false);
         setTvModalOpen(false);
         setDownloadsOpen(false);
         setAccountModalOpen(false);
@@ -1585,6 +1732,7 @@ export default function App() {
       if (canvas && ctx) {
         let hands: TrackedHand[] = [];
         let faceAnchor = createDefaultFaceAnchor();
+        let bodyFrame: BodyTrackingFrame = createEmptyBodyTrackingFrame();
         let clapReadiness = 0;
         let currentGestureState = gestureFsmRef.current.getState();
 
@@ -1602,6 +1750,17 @@ export default function App() {
             currentGestureState = GestureState.IDLE;
           }
 
+          bodyFrame = bodyTrackerRef.current.update(
+            activeVideo && activeVideo.readyState >= 2 ? activeVideo : null,
+            nowMs,
+            remoteMirrorRef.current,
+            faceAnchor,
+            hands,
+            canvas.width,
+            canvas.height,
+          );
+          bodyFrameRef.current = bodyFrame;
+
           // Process any queued clap/slap attacks sent by phone
           while (remoteAttackQueueRef.current.length > 0) {
             const remoteAtk = remoteAttackQueueRef.current.shift()!;
@@ -1610,18 +1769,19 @@ export default function App() {
             }
           }
 
-          // Direct face/head smack-to-kill in TV Display mode (hitting forehead, cheek, nose, or head)
-          if (curPhase === GamePhase.PLAYING && hands.length > 0 && faceAnchor.detected) {
-            const tvFaceSmack = gestureFsmRef.current.evaluateFaceZoneSmack(
+          // Direct face/body smack-to-kill in TV Display mode
+          if (curPhase === GamePhase.PLAYING && hands.length > 0 && (faceAnchor.detected || bodyFrame.visibleRegions.length > 0)) {
+            const tvBodySmack = gestureFsmRef.current.evaluateFaceZoneSmack(
               hands,
               mosquitoEngineRef.current.getMosquitoes(),
               faceAnchor,
               nowMs,
               cfg,
               canvas.width,
+              bodyFrame,
             );
-            if (tvFaceSmack) {
-              resolveAttack(tvFaceSmack, nowMs);
+            if (tvBodySmack) {
+              resolveAttack(tvBodySmack, nowMs);
             }
           }
 
@@ -1629,7 +1789,7 @@ export default function App() {
             calibrationRef.current = Math.min(100, calibrationRef.current + 45 * dtSec);
           }
         } else {
-          // Standard local camera + MediaPipe tracking (cover-aligned to canvas pixels)
+          // Standard local camera + MediaPipe Face, Hand & Pose Body tracking (cover-aligned to canvas pixels)
           if (!cfg.practiceMode && activeVideo && activeVideo.readyState >= 2) {
             if (handTrackerRef.current) {
               hands = handTrackerRef.current.detectFrame(
@@ -1650,7 +1810,17 @@ export default function App() {
                 canvas.height,
               );
             }
+            bodyFrame = bodyTrackerRef.current.update(
+              activeVideo,
+              nowMs,
+              cfg.mirrorCamera,
+              faceAnchor,
+              hands,
+              canvas.width,
+              canvas.height,
+            );
           }
+          bodyFrameRef.current = bodyFrame;
 
           if (!cfg.practiceMode) {
             const gestureOut = gestureFsmRef.current.update(
@@ -1660,6 +1830,7 @@ export default function App() {
               canvas.width,
               curPhase === GamePhase.PLAYING ? mosquitoEngineRef.current.getMosquitoes() : undefined,
               faceAnchor,
+              bodyFrame,
             );
             clapReadiness = gestureOut.clapReadiness;
             currentGestureState = gestureOut.state;
@@ -1683,7 +1854,7 @@ export default function App() {
 
         latestHandsRef.current = hands;
 
-        // 3. Update 3D mosquito movement simulation (freezes cleanly when PAUSED)
+        // 3. Update 3D mosquito movement & body-landing/biting simulation (freezes cleanly when PAUSED)
         if (curPhase === GamePhase.PLAYING || curPhase === GamePhase.CALIBRATION) {
           const landingEvents = mosquitoEngineRef.current.update(
             dtSec,
@@ -1695,13 +1866,16 @@ export default function App() {
             nowMs,
             faceAnchor,
             curPhase === GamePhase.PLAYING,
+            bodyFrame,
           );
 
           if (curPhase === GamePhase.PLAYING && landingEvents.length > 0) {
             for (const ev of landingEvents) {
               if (ev.type === 'LANDED') {
                 soundMgrRef.current.playLandingTickle();
-                setCommentary(`Mosquito landed on your ${ev.zoneLabel.toLowerCase()}! Swat it quick!`);
+                setCommentary(
+                  `Mosquito landed on your ${ev.zoneLabel.toLowerCase()}! Swat it before it bites!`,
+                );
                 pushEffect({
                   kind: 'FLOAT_TEXT',
                   x: Math.min(0.84, Math.max(0.16, ev.point.x)),
@@ -1709,14 +1883,65 @@ export default function App() {
                   createdAt: nowMs,
                   durationMs: 1150,
                   text: `ON YOUR ${ev.zoneLabel.toUpperCase()}!`,
-                  subtext: 'Swat for +15 Face Save',
+                  subtext: `Swat for +${cfg.bites.bitingKillBonus} Bite-Slap`,
                   color: '#FF6B35',
                 });
+              } else if (ev.type === 'BITE_CONFIRMED') {
+                const landmarkRef = ev.landmarkRef ?? {
+                  source: ev.category === 'FACE' ? 'FACE' : ev.category === 'HAND' ? 'HAND' : 'POSE',
+                  region: ev.region,
+                  primaryIndex: 0,
+                  localOffset: { x: 0, y: 0 },
+                  referenceScale: 0.06,
+                };
+                const result = biteManagerRef.current.registerBite({
+                  mosquitoId: ev.mosquitoId,
+                  region: ev.region,
+                  point: ev.point,
+                  landmarkRef,
+                  nowMs,
+                  biteSettings: cfg.bites,
+                  depthScale: ev.depthScale,
+                });
+                mosquitoEngineRef.current.assignActiveBiteId(ev.mosquitoId, result.record.id);
+                // Trigger randomized bite sound effect ONCE when a new bite event is confirmed
+                soundMgrRef.current.playBiteConfirmedSound();
+                syncBiteUiState(result.stats);
+                showBiteNotification(result.notification, 3600);
+                setCommentary(result.notification.message);
+                pushEffect({
+                  kind: 'FLOAT_TEXT',
+                  x: Math.min(0.84, Math.max(0.16, ev.point.x)),
+                  y: Math.min(0.82, Math.max(0.16, ev.point.y - 0.045)),
+                  createdAt: nowMs,
+                  durationMs: 1250,
+                  text: 'OUCH!',
+                  subtext: `Bit your ${ev.zoneLabel}`,
+                  color: '#FB7185',
+                });
+              } else if (ev.type === 'ESCAPED_AFTER_BITE') {
+                // Keep bite mark visible (already registered once on BITE_CONFIRMED) and play funny escape sound
+                soundMgrRef.current.playBiteEscapeLaugh();
+                setCommentary(
+                  `Hehe! Mosquito escaped after biting your ${ev.zoneLabel.toLowerCase()}!`,
+                );
               } else if (ev.type === 'TOOK_OFF') {
                 soundMgrRef.current.playBiteEscapeLaugh();
               }
             }
           }
+        }
+
+        // 3.5. Keep all active virtual bite marks anchored smoothly to moving face/body landmarks
+        if (curPhase === GamePhase.PLAYING) {
+          biteManagerRef.current.update(
+            dtSec,
+            nowMs,
+            faceAnchor,
+            bodyFrame,
+            hands,
+            cfg.bites,
+          );
         }
 
         // 4. Periodic funny mosquito speech-bubble taunt during gameplay
@@ -1768,6 +1993,9 @@ export default function App() {
           mosquitoes: mosquitoEngineRef.current.getMosquitoes(),
           hands,
           faceAnchor,
+          bodyFrame,
+          activeBites: biteManagerRef.current.getActiveBites(),
+          biteMarkSize: cfg.bites.biteMarkSize,
           effects: effectsRef.current,
           showLandmarks: cfg.showLandmarks,
           showHandPointer: cfg.showHandPointer,
@@ -1799,7 +2027,7 @@ export default function App() {
           });
         }
 
-        // 9. Sync lightweight HUD telemetry to React at ~10Hz
+        // 9. Sync lightweight HUD telemetry & healing bite mark count to React at ~10Hz
         if (nowMs - lastUiSyncTime >= 110) {
           lastUiSyncTime = nowMs;
           setGestureState(currentGestureState);
@@ -1809,7 +2037,26 @@ export default function App() {
           }
           if (curPhase === GamePhase.PLAYING) {
             setStats({ ...statsRef.current });
+            const curBiteStats = biteManagerRef.current.getStatistics();
+            const prevSync = biteStatsSyncRef.current;
+            if (
+              curBiteStats.totalBites !== prevSync.total ||
+              curBiteStats.activeBiteMarks !== prevSync.active ||
+              curBiteStats.bitingKills !== prevSync.kills
+            ) {
+              syncBiteUiState(curBiteStats);
+            }
           }
+          setBodyTrackingInfo((prev) => {
+            const nextCount = bodyFrame.visibleRegions.length;
+            if (prev.poseDetected === bodyFrame.poseDetected && prev.visibleRegionCount === nextCount) {
+              return prev;
+            }
+            return {
+              poseDetected: bodyFrame.poseDetected,
+              visibleRegionCount: nextCount,
+            };
+          });
         }
       }
 
@@ -1818,7 +2065,7 @@ export default function App() {
 
     rafId = window.requestAnimationFrame(tick);
     return () => window.cancelAnimationFrame(rafId);
-  }, [resolveAttack]);
+  }, [pushEffect, resolveAttack, showBiteNotification, syncBiteUiState]);
 
   // Practice Pointer Mode input handlers (ONLY active when settings.practiceMode is enabled in STANDALONE)
   const getNormalizedPointer = (e: PointerEvent<HTMLCanvasElement>): Point2D | null => {
@@ -1957,6 +2204,8 @@ export default function App() {
           <GameHud
             phase={phase}
             stats={stats}
+            biteStats={biteStats}
+            biteNotification={biteNotification}
             effectiveDifficulty={effectiveDifficulty}
             autoDifficulty={settings.autoDifficulty}
             gestureState={gestureState}
@@ -1973,8 +2222,11 @@ export default function App() {
             playerDisplayName={playerDisplayName}
             isLoggedIn={isLoggedIn}
             onRequestSwarmTactic={handleRequestSwarmTactic}
+            onOpenBiteHistory={() => setBiteHistoryOpen(true)}
+            onResetBiteMarks={handleResetBiteMarks}
             onOpenTvCast={() => setTvModalOpen(true)}
             onOpenAccount={() => openAccountModal('profile')}
+            onOpenSettings={() => setSettingsOpen(true)}
           />
 
           {/* Calibration / Start Overlay */}
@@ -2058,6 +2310,7 @@ export default function App() {
           {phase === GamePhase.GAME_OVER && (
             <GameOverModal
               stats={stats}
+              biteStats={biteStats}
               achievements={achievements}
               aiDebrief={aiDebrief}
               swarmCleared={swarmCleared}
@@ -2072,21 +2325,37 @@ export default function App() {
             />
           )}
 
-          {/* Bottom Interactive Control Dock */}
-          <ControlDock
+          {/* Bite Counter & Location History Drawer */}
+          <BiteHistoryPanel
+            open={biteHistoryOpen}
+            stats={biteStats}
+            bites={biteHistory}
+            bodyTrackingActive={bodyTrackingInfo.poseDetected}
+            visibleRegionCount={bodyTrackingInfo.visibleRegionCount}
+            onResetBiteMarks={handleResetBiteMarks}
+            onClose={() => setBiteHistoryOpen(false)}
+          />
+
+          {/* Full Settings & Game Controls Drawer (opened via top-right Settings icon) */}
+          <SettingsDrawer
+            open={settingsOpen}
             phase={phase}
-            difficulty={settings.difficulty}
-            autoDifficulty={settings.autoDifficulty}
-            muted={settings.muted}
-            showHandPointer={settings.showHandPointer}
-            isFullscreen={isFullscreen}
+            settings={settings}
+            cameras={cameras}
             livingCount={stats.mosquitoesRemaining}
-            cameraFacing={settings.cameraFacing}
             deviceRole={deviceRole}
-            roomCode={roomCode}
-            companionConnected={companionState === 'CONNECTED'}
+            isFullscreen={isFullscreen}
+            llmStatus={llmStatus}
+            llmModels={llmModels}
+            llmStatusMessage={llmStatusMsg}
+            backendStatus={backendStatus}
+            backendStatusMessage={backendStatusMsg}
             playerDisplayName={playerDisplayName}
+            playerUsername={playerUsername}
             isLoggedIn={isLoggedIn}
+            totalBites={biteStats.totalBites}
+            activeBiteMarks={biteStats.activeBiteMarks}
+            onClose={() => setSettingsOpen(false)}
             onStart={startNewGame}
             onPauseToggle={handlePauseToggle}
             onRestart={startNewGame}
@@ -2101,36 +2370,9 @@ export default function App() {
             onToggleAutoDifficulty={() =>
               setSettings((prev) => ({ ...prev, autoDifficulty: !prev.autoDifficulty }))
             }
-            onToggleMute={() => setSettings((prev) => ({ ...prev, muted: !prev.muted }))}
-            onToggleHandPointer={() =>
-              setSettings((prev) => ({ ...prev, showHandPointer: !prev.showHandPointer }))
-            }
             onFlipCamera={handleFlipCamera}
-            onOpenTvCast={() => setTvModalOpen(true)}
-            onOpenDownloads={() => {
-              setDownloadPlatformFocus(null);
-              setDownloadsOpen(true);
-            }}
-            onOpenSettings={() => setSettingsOpen(true)}
-            onOpenAccount={() => openAccountModal('profile')}
-            onOpenLeaderboard={() => openAccountModal('leaderboard')}
             onToggleFullscreen={() => void handleToggleFullscreen()}
-          />
-
-          {/* Full Settings Configuration Drawer */}
-          <SettingsDrawer
-            open={settingsOpen}
-            settings={settings}
-            cameras={cameras}
-            llmStatus={llmStatus}
-            llmModels={llmModels}
-            llmStatusMessage={llmStatusMsg}
-            backendStatus={backendStatus}
-            backendStatusMessage={backendStatusMsg}
-            playerDisplayName={playerDisplayName}
-            playerUsername={playerUsername}
-            isLoggedIn={isLoggedIn}
-            onClose={() => setSettingsOpen(false)}
+            onOpenBiteHistory={() => setBiteHistoryOpen(true)}
             onOpenTvCast={() => setTvModalOpen(true)}
             onOpenDownloads={() => {
               setDownloadPlatformFocus(null);
@@ -2143,6 +2385,11 @@ export default function App() {
             onTestLlm={testLlmConnection}
             onTestKillSound={() => soundMgrRef.current.playKillSound(1)}
             onTestMissSound={() => soundMgrRef.current.playMissSound()}
+            onTestBiteSound={() => {
+              soundMgrRef.current.unlock();
+              soundMgrRef.current.playBiteConfirmedSound();
+            }}
+            onResetBiteMarks={handleResetBiteMarks}
             onResetDefaults={() => setSettings(structuredClone(DEFAULT_SETTINGS))}
           />
         </main>

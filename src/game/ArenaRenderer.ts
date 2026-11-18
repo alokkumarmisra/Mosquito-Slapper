@@ -1,4 +1,7 @@
 import {
+  BiteRecord,
+  BodyRegionId,
+  BodyTrackingFrame,
   FaceAnchor,
   FaceLandingZone,
   GestureState,
@@ -7,6 +10,7 @@ import {
   TrackedHand,
   VisualEffect,
 } from '../types/game';
+import { BODY_REGION_LABELS } from '../vision/BodyTracker';
 import { ALL_FACE_LANDING_ZONES, FACE_ZONE_LABELS } from '../vision/FaceTracker';
 
 const HAND_CONNECTIONS: Array<[number, number]> = [
@@ -31,6 +35,9 @@ export interface RenderFrameParams {
   mosquitoes: MosquitoEntity[];
   hands: TrackedHand[];
   faceAnchor?: FaceAnchor;
+  bodyFrame?: BodyTrackingFrame;
+  activeBites?: BiteRecord[];
+  biteMarkSize?: number;
   effects: VisualEffect[];
   showLandmarks: boolean;
   showHandPointer: boolean;
@@ -72,6 +79,9 @@ export class ArenaRenderer {
       mosquitoes,
       hands,
       faceAnchor,
+      bodyFrame,
+      activeBites,
+      biteMarkSize = 1.0,
       effects,
       showLandmarks,
       showHandPointer,
@@ -100,9 +110,19 @@ export class ArenaRenderer {
       resScale,
     );
 
-    // LAYER 1.2: Subtle recognized face-zone AR anchors (Head, Forehead, Nose, Left & Right Cheeks)
-    if (showFaceZones && !practiceMode && faceAnchor?.detected && faceAnchor.zones) {
-      this.drawFaceZonesOverlay(ctx, width, height, faceAnchor, mosquitoes, nowMs, resScale);
+    // LAYER 1.15: Virtual skin-anchored mosquito bite swelling marks (over webcam feed, never altering source video)
+    if (!practiceMode && activeBites && activeBites.length > 0) {
+      this.drawBiteMarks(ctx, width, height, activeBites, biteMarkSize, nowMs, resScale);
+    }
+
+    // LAYER 1.2: Subtle recognized face & body AR anchors (only when toggled ON in settings)
+    if (showFaceZones && !practiceMode) {
+      if (faceAnchor?.detected && faceAnchor.zones) {
+        this.drawFaceZonesOverlay(ctx, width, height, faceAnchor, mosquitoes, nowMs, resScale);
+      }
+      if (bodyFrame && bodyFrame.visibleRegions.length > 0) {
+        this.drawBodyRegionsOverlay(ctx, width, height, bodyFrame, mosquitoes, nowMs, resScale);
+      }
     }
 
     // Bucket mosquitoes into explicit rear / middle / foreground depth layers
@@ -243,19 +263,13 @@ export class ArenaRenderer {
       ctx.fillRect(0, 0, width, height);
     }
 
-    // Subtle edge scrims scaled proportionally to viewport height for HUD/dock legibility on every screen
+    // Subtle top edge scrim for HUD legibility (bottom bar hidden for unobstructed full-bleed camera view)
     const scrimH = Math.min(height * 0.16, 110 * resScale);
     const topScrim = ctx.createLinearGradient(0, 0, 0, scrimH);
     topScrim.addColorStop(0, 'rgba(10, 14, 11, 0.76)');
     topScrim.addColorStop(1, 'rgba(10, 14, 11, 0)');
     ctx.fillStyle = topScrim;
     ctx.fillRect(0, 0, width, scrimH);
-
-    const botScrim = ctx.createLinearGradient(0, height - scrimH, 0, height);
-    botScrim.addColorStop(0, 'rgba(10, 14, 11, 0)');
-    botScrim.addColorStop(1, 'rgba(10, 14, 11, 0.78)');
-    ctx.fillStyle = botScrim;
-    ctx.fillRect(0, height - scrimH, width, scrimH);
   }
 
   /**
@@ -377,6 +391,343 @@ export class ArenaRenderer {
           ? '#C8F542'
           : 'rgba(244, 247, 242, 0.68)';
       ctx.fillText(displayLabel, zx, labelY);
+    }
+
+    ctx.restore();
+  }
+
+  /**
+   * Layer 1.15: Virtual mosquito bite marks rendered directly on top of the webcam canvas
+   * at each bite's tracked landmark-relative normalized coordinate.
+   * Implements all 5 distinct visual styles:
+   *   1. SMALL_RED_CIRCLE  — crisp red circular bite with central pinpoint
+   *   2. RAISED_BUMP       — inflamed crimson base with raised pale dome & 3D shadow edge
+   *   3. SWOLLEN_PATCH     — larger organic multi-lobe diffuse reddish welt
+   *   4. PULSATING_MARK    — rhythmically throbbing red mark with concentric pulse wave
+   *   5. ITCHING_MARK      — swollen red bump with delicate oscillating itch-tingle ticks
+   */
+  private drawBiteMarks(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    bites: BiteRecord[],
+    biteMarkSize: number,
+    nowMs: number,
+    resScale: number,
+  ): void {
+    const sizeSetting = Math.max(0.5, Math.min(2.0, biteMarkSize));
+    const timeSec = nowMs * 0.001;
+
+    for (const bite of bites) {
+      if (!bite.attachedVisible || bite.opacity <= 0.015 || bite.animationState === 'HEALED') {
+        continue;
+      }
+
+      const cx = bite.normalizedX * width;
+      const cy = bite.normalizedY * height;
+
+      // Smooth spring-like scale-in when appearing, slight shrinkage while healing
+      const ageMs = Math.max(0, nowMs - bite.createdAtPerfMs);
+      const appearScale =
+        bite.animationState === 'APPEARING'
+          ? 0.42 + 0.58 * Math.min(1, ageMs / 460)
+          : bite.animationState === 'HEALING'
+            ? 0.84 + 0.16 * bite.opacity
+            : 1.0;
+
+      const baseR =
+        12.5 *
+        resScale *
+        sizeSetting *
+        bite.swellingSize *
+        bite.depthScale *
+        appearScale;
+
+      const intensity = Math.max(0.6, Math.min(1.25, bite.swellingIntensity));
+      const alpha = Math.max(0, Math.min(1, bite.opacity));
+
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.globalAlpha = alpha;
+
+      switch (bite.visualStyle) {
+        case 'SMALL_RED_CIRCLE': {
+          // Soft erythematous outer flush
+          const outer = ctx.createRadialGradient(0, 0, baseR * 0.12, 0, 0, baseR * 1.15);
+          outer.addColorStop(0, `rgba(225, 42, 62, ${0.72 * intensity})`);
+          outer.addColorStop(0.55, `rgba(218, 52, 68, ${0.42 * intensity})`);
+          outer.addColorStop(1, 'rgba(218, 52, 68, 0)');
+          ctx.fillStyle = outer;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 1.15, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Crisp small red circular core
+          ctx.fillStyle = `rgba(214, 38, 58, ${0.62 * intensity})`;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 0.52, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Tiny dark-crimson puncture center
+          ctx.fillStyle = 'rgba(138, 18, 32, 0.85)';
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.max(1.5 * resScale, baseR * 0.14), 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+
+        case 'RAISED_BUMP': {
+          // Outer red inflammation halo
+          const halo = ctx.createRadialGradient(0, 0, baseR * 0.2, 0, 0, baseR * 1.38);
+          halo.addColorStop(0, `rgba(224, 48, 66, ${0.68 * intensity})`);
+          halo.addColorStop(0.62, `rgba(210, 56, 72, ${0.34 * intensity})`);
+          halo.addColorStop(1, 'rgba(210, 56, 72, 0)');
+          ctx.fillStyle = halo;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 1.38, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Subtle lower-right crescent shadow to sell a 3D raised wheal on skin
+          ctx.fillStyle = 'rgba(110, 18, 28, 0.34)';
+          ctx.beginPath();
+          ctx.arc(baseR * 0.1, baseR * 0.14, baseR * 0.64, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Raised pale-pink dome center (realistic urticarial mosquito bump)
+          const dome = ctx.createRadialGradient(
+            -baseR * 0.16,
+            -baseR * 0.18,
+            baseR * 0.06,
+            0,
+            0,
+            baseR * 0.62,
+          );
+          dome.addColorStop(0, 'rgba(255, 212, 216, 0.88)');
+          dome.addColorStop(0.55, `rgba(244, 114, 128, ${0.72 * intensity})`);
+          dome.addColorStop(1, `rgba(204, 38, 56, ${0.64 * intensity})`);
+          ctx.fillStyle = dome;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 0.62, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Central tiny bite puncture dot
+          ctx.fillStyle = 'rgba(155, 22, 38, 0.78)';
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.max(1.4 * resScale, baseR * 0.11), 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+
+        case 'SWOLLEN_PATCH': {
+          // Slightly larger organic multi-lobe diffuse reddish swollen welt
+          const lobes = [
+            { ox: 0, oy: 0, rx: baseR * 1.48, ry: baseR * 1.24, rot: 0.25 },
+            { ox: baseR * 0.34, oy: -baseR * 0.18, rx: baseR * 0.96, ry: baseR * 0.8, rot: -0.3 },
+            { ox: -baseR * 0.28, oy: baseR * 0.22, rx: baseR * 0.92, ry: baseR * 0.76, rot: 0.45 },
+          ];
+          for (const lobe of lobes) {
+            ctx.save();
+            ctx.translate(lobe.ox, lobe.oy);
+            ctx.rotate(lobe.rot);
+            const patchGrad = ctx.createRadialGradient(0, 0, lobe.rx * 0.1, 0, 0, lobe.rx);
+            patchGrad.addColorStop(0, `rgba(220, 44, 62, ${0.52 * intensity})`);
+            patchGrad.addColorStop(0.6, `rgba(216, 62, 78, ${0.28 * intensity})`);
+            patchGrad.addColorStop(1, 'rgba(216, 62, 78, 0)');
+            ctx.fillStyle = patchGrad;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, lobe.rx, lobe.ry, 0, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.restore();
+          }
+
+          // Inner warm puffy wheal center
+          const centerGrad = ctx.createRadialGradient(-baseR * 0.1, -baseR * 0.1, 0, 0, 0, baseR * 0.65);
+          centerGrad.addColorStop(0, 'rgba(255, 196, 202, 0.68)');
+          centerGrad.addColorStop(0.65, `rgba(228, 62, 80, ${0.56 * intensity})`);
+          centerGrad.addColorStop(1, 'rgba(214, 42, 62, 0)');
+          ctx.fillStyle = centerGrad;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 0.65, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'rgba(145, 20, 36, 0.8)';
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.max(1.6 * resScale, baseR * 0.12), 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+
+        case 'PULSATING_MARK': {
+          const pulseWave = 0.5 + 0.5 * Math.sin(timeSec * 5.2 + bite.createdAtPerfMs * 0.01);
+          const expandT = (timeSec * 0.95 + (bite.createdAtPerfMs % 1000) * 0.001) % 1;
+
+          // Expanding rhythmic inflammation pulse ring
+          const ringR = baseR * (0.7 + expandT * 1.15);
+          ctx.strokeStyle = `rgba(244, 63, 94, ${(1 - expandT) * 0.62 * intensity})`;
+          ctx.lineWidth = Math.max(1.2 * resScale, (2.2 - expandT * 1.4) * resScale);
+          ctx.beginPath();
+          ctx.arc(0, 0, ringR, 0, Math.PI * 2);
+          ctx.stroke();
+
+          // Throbbing red swollen core
+          const throbR = baseR * (1.1 + pulseWave * 0.22);
+          const glow = ctx.createRadialGradient(0, 0, throbR * 0.12, 0, 0, throbR);
+          glow.addColorStop(0, `rgba(239, 44, 68, ${0.78 * intensity})`);
+          glow.addColorStop(0.55, `rgba(225, 58, 76, ${0.44 * intensity})`);
+          glow.addColorStop(1, 'rgba(225, 58, 76, 0)');
+          ctx.fillStyle = glow;
+          ctx.beginPath();
+          ctx.arc(0, 0, throbR, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Bright center bump
+          ctx.fillStyle = `rgba(255, 198, 205, ${0.58 + pulseWave * 0.22})`;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * (0.34 + pulseWave * 0.06), 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'rgba(150, 16, 34, 0.88)';
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.max(1.5 * resScale, baseR * 0.13), 0, Math.PI * 2);
+          ctx.fill();
+          break;
+        }
+
+        case 'ITCHING_MARK': {
+          // Inflamed base swelling
+          const baseGrad = ctx.createRadialGradient(0, 0, baseR * 0.15, 0, 0, baseR * 1.32);
+          baseGrad.addColorStop(0, `rgba(232, 48, 70, ${0.72 * intensity})`);
+          baseGrad.addColorStop(0.58, `rgba(220, 60, 78, ${0.38 * intensity})`);
+          baseGrad.addColorStop(1, 'rgba(220, 60, 78, 0)');
+          ctx.fillStyle = baseGrad;
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 1.32, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Raised wheal
+          ctx.fillStyle = 'rgba(255, 204, 210, 0.72)';
+          ctx.beginPath();
+          ctx.arc(0, 0, baseR * 0.46, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = 'rgba(148, 20, 36, 0.82)';
+          ctx.beginPath();
+          ctx.arc(0, 0, Math.max(1.4 * resScale, baseR * 0.12), 0, Math.PI * 2);
+          ctx.fill();
+
+          // Subtle animated radial itch-tingle zig/arc indicators gently shimmering around the bite
+          const wiggle = Math.sin(timeSec * 11.5 + bite.createdAtPerfMs * 0.01) * 0.14;
+          const shimmer = 0.52 + 0.36 * Math.sin(timeSec * 6.8 + bite.createdAtPerfMs * 0.02);
+          ctx.strokeStyle = `rgba(255, 210, 188, ${shimmer})`;
+          ctx.lineWidth = Math.max(1.1 * resScale, 1.45 * resScale);
+          ctx.lineCap = 'round';
+
+          for (let i = 0; i < 4; i++) {
+            const ang = (i * Math.PI) * 0.5 + 0.42 + (i % 2 === 0 ? wiggle : -wiggle);
+            const rInner = baseR * 0.96;
+            const rMid = baseR * 1.24;
+            const rOuter = baseR * 1.46;
+            const perp = ang + Math.PI * 0.5;
+            const jag = baseR * 0.12 * (i % 2 === 0 ? 1 : -1);
+
+            ctx.beginPath();
+            ctx.moveTo(Math.cos(ang) * rInner, Math.sin(ang) * rInner);
+            ctx.lineTo(
+              Math.cos(ang) * rMid + Math.cos(perp) * jag,
+              Math.sin(ang) * rMid + Math.sin(perp) * jag,
+            );
+            ctx.lineTo(Math.cos(ang) * rOuter, Math.sin(ang) * rOuter);
+            ctx.stroke();
+          }
+          break;
+        }
+      }
+
+      ctx.restore();
+    }
+  }
+
+  /**
+   * Optional AR body landmark markers (Neck, Shoulders, Arms, Elbows, Forearms, Hands, Legs)
+   * shown only when the user enables Zone Markers in Settings.
+   */
+  private drawBodyRegionsOverlay(
+    ctx: CanvasRenderingContext2D,
+    width: number,
+    height: number,
+    bodyFrame: BodyTrackingFrame,
+    mosquitoes: MosquitoEntity[],
+    nowMs: number,
+    resScale: number,
+  ): void {
+    const targetedRegions = new Set<BodyRegionId>();
+    const landedRegions = new Set<BodyRegionId>();
+    for (const m of mosquitoes) {
+      if (!m.alive || !m.landingBodyRegion) continue;
+      if (m.animState === 'LANDED') landedRegions.add(m.landingBodyRegion);
+      else if (m.animState === 'APPROACHING_LANDING') targetedRegions.add(m.landingBodyRegion);
+    }
+
+    const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.0085);
+    ctx.save();
+
+    for (const regionId of bodyFrame.visibleRegions) {
+      const anchor = bodyFrame.regions[regionId];
+      if (!anchor || anchor.category === 'FACE') continue; // Face zones already rendered by drawFaceZonesOverlay
+
+      const x = anchor.point.x * width;
+      const y = anchor.point.y * height;
+      const isLanded = landedRegions.has(regionId);
+      const isTargeted = targetedRegions.has(regionId);
+
+      // Subtle limb segment line when available
+      if (anchor.segmentStart && anchor.segmentEnd) {
+        ctx.strokeStyle = isLanded
+          ? 'rgba(244, 63, 94, 0.52)'
+          : isTargeted
+            ? 'rgba(255, 107, 53, 0.44)'
+            : 'rgba(56, 189, 248, 0.24)';
+        ctx.lineWidth = (isLanded ? 2.4 : 1.4) * resScale;
+        ctx.beginPath();
+        ctx.moveTo(anchor.segmentStart.x * width, anchor.segmentStart.y * height);
+        ctx.lineTo(anchor.segmentEnd.x * width, anchor.segmentEnd.y * height);
+        ctx.stroke();
+      }
+
+      if (isLanded || isTargeted) {
+        ctx.strokeStyle = isLanded
+          ? `rgba(244, 63, 94, ${0.65 + pulse * 0.35})`
+          : `rgba(200, 245, 66, ${0.5 + pulse * 0.35})`;
+        ctx.lineWidth = (isLanded ? 2.1 : 1.5) * resScale;
+        ctx.beginPath();
+        ctx.arc(x, y, (14 + pulse * 5) * resScale, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = isLanded
+        ? '#FB7185'
+        : isTargeted
+          ? '#C8F542'
+          : 'rgba(56, 189, 248, 0.55)';
+      ctx.beginPath();
+      ctx.arc(x, y, (isLanded ? 3.2 : 2.2) * resScale, 0, Math.PI * 2);
+      ctx.fill();
+
+      const label = isLanded
+        ? `BITING ${BODY_REGION_LABELS[regionId].toUpperCase()}!`
+        : BODY_REGION_LABELS[regionId];
+      ctx.font = `${isLanded ? '700' : '500'} ${Math.round((isLanded ? 10.5 : 9.2) * resScale)}px "JetBrains Mono", monospace`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'top';
+      ctx.lineWidth = 2.6 * resScale;
+      ctx.strokeStyle = 'rgba(11, 15, 12, 0.82)';
+      ctx.strokeText(label, x, y + 7 * resScale);
+      ctx.fillStyle = isLanded
+        ? '#FDA4AF'
+        : isTargeted
+          ? '#C8F542'
+          : 'rgba(226, 232, 240, 0.62)';
+      ctx.fillText(label, x, y + 7 * resScale);
     }
 
     ctx.restore();
@@ -568,12 +919,15 @@ export class ArenaRenderer {
     ctx.translate(m.screenX, m.screenY);
     ctx.globalAlpha = alpha;
 
-    // Subtle pulsing alert halo around a mosquito perched on your head/nose/forehead/cheek
+    // Subtle pulsing alert halo around a mosquito perched/biting on your face or body
     if (isLanded) {
-      const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.011);
+      const pulse = 0.5 + 0.5 * Math.sin(nowMs * 0.012);
+      const isActivelyBiting = Boolean(m.biteConfirmed);
       ctx.save();
-      ctx.strokeStyle = `rgba(255, 107, 53, ${0.42 + pulse * 0.45})`;
-      ctx.lineWidth = 2 * resScale;
+      ctx.strokeStyle = isActivelyBiting
+        ? `rgba(244, 63, 94, ${0.52 + pulse * 0.42})`
+        : `rgba(255, 107, 53, ${0.42 + pulse * 0.45})`;
+      ctx.lineWidth = (isActivelyBiting ? 2.4 : 2.0) * resScale;
       ctx.beginPath();
       ctx.arc(0, 0, (24 + pulse * 10) * scale, 0, Math.PI * 2);
       ctx.stroke();
@@ -597,8 +951,8 @@ export class ArenaRenderer {
       ctx.restore();
     }
 
-    // Apply body bank tilt & facing flip (plus subtle proboscis dip when perched & nibbling)
-    const nibbleDip = isLanded ? Math.sin(m.bitePulsePhase ?? 0) * 0.12 + 0.14 : 0;
+    // Apply body bank tilt & facing flip (plus subtle proboscis dip when perched & biting)
+    const nibbleDip = isLanded ? Math.sin(m.bitePulsePhase ?? 0) * 0.14 + 0.16 : 0;
     ctx.rotate(m.rotation + (facingLeft ? -nibbleDip : nibbleDip));
     if (facingLeft) {
       ctx.scale(-1, 1);
@@ -653,19 +1007,30 @@ export class ArenaRenderer {
     ctx.stroke();
     ctx.restore();
 
-    // 3. Striped elongated abdomen (distinctive tiger mosquito silhouette)
+    // 3. Striped elongated abdomen (gently swells with warm crimson tint while actively biting)
     ctx.save();
     ctx.rotate(0.22);
-    ctx.fillStyle = '#252B26';
+    const biteFillPulse = isLanded && m.biteConfirmed
+      ? 0.5 + 0.5 * Math.sin((m.bitePulsePhase ?? 0) * 1.4)
+      : 0;
+    ctx.fillStyle = isLanded && m.biteConfirmed ? '#5C1F28' : '#252B26';
     ctx.strokeStyle = '#0B0E0C';
     ctx.lineWidth = 1.8;
     ctx.beginPath();
-    ctx.ellipse(-15, 2, 13.5, 5.2, 0.12, 0, Math.PI * 2);
+    ctx.ellipse(
+      -15,
+      2,
+      13.5 + biteFillPulse * 1.2,
+      5.2 + biteFillPulse * 1.1,
+      0.12,
+      0,
+      Math.PI * 2,
+    );
     ctx.fill();
     ctx.stroke();
 
     // Crisp pale-yellow arcade stripes on abdomen so it pops over ANY webcam background!
-    ctx.strokeStyle = '#D9F97A';
+    ctx.strokeStyle = isLanded && m.biteConfirmed ? '#FDA4AF' : '#D9F97A';
     ctx.lineWidth = 2.0;
     for (const sx of [-22, -17, -12, -7]) {
       ctx.beginPath();

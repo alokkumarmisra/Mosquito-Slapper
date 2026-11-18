@@ -108,7 +108,7 @@ export function CalibrationOverlay({
   const calibrated = calibrationProgress >= 100 || practiceMode;
 
   return (
-    <div className="safe-x absolute inset-0 z-10 flex items-center justify-center overflow-y-auto pt-14 pb-16 sm:pt-20 sm:pb-20 [@media(max-height:520px)]:pt-14 [@media(max-height:520px)]:pb-16">
+    <div className="safe-x safe-bottom absolute inset-0 z-10 flex items-center justify-center overflow-y-auto pt-14 pb-6 sm:pt-20 sm:pb-8 [@media(max-height:520px)]:pt-14 [@media(max-height:520px)]:pb-5">
       <div className="my-auto w-full max-w-2xl rounded-2xl border border-white/12 bg-[#111613]/90 p-3.5 shadow-2xl backdrop-blur-md min-[380px]:p-4 sm:p-7 [@media(max-height:520px)]:p-3.5">
         {/* Top intro lockup */}
         <div className="flex flex-col gap-3 min-[380px]:flex-row min-[380px]:items-center sm:gap-5">

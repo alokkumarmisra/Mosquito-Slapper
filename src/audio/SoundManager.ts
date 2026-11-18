@@ -71,6 +71,7 @@ function setPannerPosition3D(
 export class SoundManager {
   private ctx: AudioContext | null = null;
   private sfxGain: GainNode | null = null;
+  private biteGain: GainNode | null = null;
   private swarmSummingBus: GainNode | null = null;
   private buzzMasterGain: GainNode | null = null;
   private buzzCompressor: DynamicsCompressorNode | null = null;
@@ -83,14 +84,18 @@ export class SoundManager {
 
   private sfxVolume = 0.8;
   private buzzVolume = 0.35;
+  private biteSoundVolume = 0.85;
   private muted = false;
   private enableMissVoice = false;
 
   private lastKillVariant = -1;
   private lastMissVariant = -1;
+  private lastBiteVariant = -1;
   private lastSfxTimestamp = 0;
   private activeOneShots = 0;
   private readonly maxConcurrentOneShots = 5;
+  private activeBiteOscillators: Set<OscillatorNode> = new Set();
+  private biteSpeechActive = false;
 
   public unlock(): void {
     if (!this.ctx) {
@@ -104,6 +109,9 @@ export class SoundManager {
 
       this.sfxGain = this.ctx.createGain();
       this.sfxGain.connect(this.ctx.destination);
+
+      this.biteGain = this.ctx.createGain();
+      this.biteGain.connect(this.ctx.destination);
 
       // Dedicated summing bus aggregating all individual mosquito PannerNodes + swarm density layers
       this.swarmSummingBus = this.ctx.createGain();
@@ -170,11 +178,15 @@ export class SoundManager {
   public configure(opts: {
     sfxVolume: number;
     buzzVolume: number;
+    biteSoundVolume?: number;
     muted: boolean;
     enableMissVoice: boolean;
   }): void {
     this.sfxVolume = clamp(opts.sfxVolume, 0, 1);
     this.buzzVolume = clamp(opts.buzzVolume, 0, 1);
+    if (typeof opts.biteSoundVolume === 'number') {
+      this.biteSoundVolume = clamp(opts.biteSoundVolume, 0, 1);
+    }
     this.muted = opts.muted;
     this.enableMissVoice = opts.enableMissVoice;
     this.applyVolumes();
@@ -184,6 +196,9 @@ export class SoundManager {
     if (!this.ctx || !this.sfxGain || !this.buzzMasterGain) return;
     const now = this.ctx.currentTime;
     this.sfxGain.gain.setTargetAtTime(this.muted ? 0 : this.sfxVolume, now, 0.03);
+    if (this.biteGain) {
+      this.biteGain.gain.setTargetAtTime(this.muted ? 0 : this.biteSoundVolume, now, 0.03);
+    }
     if (this.muted || this.buzzVolume <= 0.005) {
       this.buzzMasterGain.gain.setTargetAtTime(0, now, 0.05);
     }
@@ -827,12 +842,11 @@ export class SoundManager {
     }
   }
 
-  /** Tiny comical soft tickle-boop when a mosquito lands on the player's head/nose/forehead/cheek */
+  /** Tiny comical soft tickle-boop when a mosquito lands on the player's body or face */
   public playLandingTickle(): void {
-    if (!this.canPlayOneShot(true)) return;
-    if (!this.ctx || !this.sfxGain) return;
+    this.unlock();
+    if (!this.ctx || !this.biteGain || this.muted || this.biteSoundVolume <= 0.01) return;
     const now = this.ctx.currentTime;
-    this.trackOneShot(260);
 
     const osc = this.ctx.createOscillator();
     const gain = this.ctx.createGain();
@@ -846,22 +860,165 @@ export class SoundManager {
     gain.gain.exponentialRampToValueAtTime(0.001, now + 0.16);
 
     osc.connect(gain);
-    gain.connect(this.sfxGain);
+    gain.connect(this.biteGain);
+    this.trackBiteOscillator(osc);
     osc.start(now);
     osc.stop(now + 0.18);
   }
 
-  /** Playful mini insect zip-giggle when a landed mosquito finishes resting on your face and escapes */
-  public playBiteEscapeLaugh(): void {
-    if (!this.canPlayOneShot()) return;
-    if (!this.ctx || !this.sfxGain) return;
-    const now = this.ctx.currentTime;
-    this.trackOneShot(320);
+  /**
+   * Plays ONE randomized, non-repeating bite sound effect when a new bite is confirmed:
+   *  0) "Ouch!"
+   *  1) "Hey! That tickles!"
+   *  2) "Gotcha! I've bitten you!"
+   *  3) "Another victim!"
+   *  4) Funny synthesized mosquito laughter
+   */
+  public playBiteConfirmedSound(): void {
+    this.unlock();
+    if (!this.ctx || !this.biteGain || this.muted || this.biteSoundVolume <= 0.01) return;
 
-    const notes = [740, 890, 1080];
+    const variant = this.pickNonRepeating(5, this.lastBiteVariant);
+    this.lastBiteVariant = variant;
+    const now = this.ctx.currentTime;
+
+    switch (variant) {
+      case 0:
+        // Crisp comic pinch sting + "Ouch!"
+        this.scheduleBiteTone(860, 420, 'triangle', now, 0.15, 0.24);
+        this.scheduleBiteTone(520, 290, 'sine', now + 0.07, 0.14, 0.16);
+        this.speakBiteLine('Ouch!', 1.22, 1.18);
+        break;
+      case 1:
+        // Playful tickle trill + "Hey! That tickles!"
+        [680, 820, 960, 790].forEach((hz, idx) => {
+          this.scheduleBiteTone(hz, hz * 1.08, 'sine', now + idx * 0.05, 0.06, 0.15);
+        });
+        this.speakBiteLine('Hey! That tickles!', 1.32, 1.2);
+        break;
+      case 2:
+        // Mischievous mosquito sting + "Gotcha! I've bitten you!"
+        this.scheduleBiteTone(640, 1140, 'sawtooth', now, 0.11, 0.13);
+        this.scheduleBiteTone(920, 1280, 'triangle', now + 0.1, 0.12, 0.15);
+        this.speakBiteLine("Gotcha! I've bitten you!", 1.82, 1.24);
+        break;
+      case 3:
+        // Cheeky chirp + "Another victim!"
+        this.scheduleBiteTone(540, 880, 'triangle', now, 0.1, 0.17);
+        this.scheduleBiteTone(740, 1180, 'triangle', now + 0.09, 0.12, 0.17);
+        this.speakBiteLine('Another victim!', 1.75, 1.22);
+        break;
+      default:
+        // Pure comedic high-pitched mosquito giggle cascade ("hee-hee-hee-hee!")
+        this.playMosquitoBiteLaughter(now);
+        break;
+    }
+  }
+
+  /**
+   * Immediately halts any ongoing biting sound/utterance when the player slaps a biting mosquito.
+   */
+  public stopBitingSound(): void {
+    for (const osc of this.activeBiteOscillators) {
+      try {
+        osc.stop();
+      } catch {
+        // Already stopped
+      }
+    }
+    this.activeBiteOscillators.clear();
+
+    if (this.biteSpeechActive && typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      try {
+        window.speechSynthesis.cancel();
+      } catch {
+        // Ignore speech cancellation errors
+      }
+      this.biteSpeechActive = false;
+    }
+  }
+
+  /** Playful mini insect zip-giggle when a mosquito escapes after biting */
+  public playBiteEscapeLaugh(): void {
+    this.unlock();
+    if (!this.ctx || !this.biteGain || this.muted || this.biteSoundVolume <= 0.01) return;
+    const now = this.ctx.currentTime;
+    this.playMosquitoBiteLaughter(now);
+  }
+
+  /** Celebratory crisp reward chime when slapping a mosquito mid-bite for the special bonus */
+  public playBitingKillBonusSound(): void {
+    if (!this.canPlayOneShot(true)) return;
+    if (!this.ctx) return;
+    const now = this.ctx.currentTime;
+    const notes = [587.33, 783.99, 1046.5, 1318.51];
     notes.forEach((hz, idx) => {
-      this.scheduleTone(hz, 'triangle', now + idx * 0.065, 0.06, 0.14);
+      this.scheduleTone(hz, 'triangle', now + idx * 0.042, 0.15, 0.22);
     });
+  }
+
+  private playMosquitoBiteLaughter(now: number): void {
+    const giggleNotes = [940, 1220, 990, 1310, 1040, 1420];
+    giggleNotes.forEach((hz, idx) => {
+      this.scheduleBiteTone(hz, hz * 1.12, 'triangle', now + idx * 0.058, 0.052, 0.17);
+    });
+  }
+
+  private scheduleBiteTone(
+    startFreq: number,
+    endFreq: number,
+    type: OscillatorType,
+    startTime: number,
+    duration: number,
+    peakGain: number,
+  ): void {
+    if (!this.ctx || !this.biteGain) return;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(startFreq, startTime);
+    osc.frequency.exponentialRampToValueAtTime(Math.max(80, endFreq), startTime + duration);
+
+    gain.gain.setValueAtTime(0.001, startTime);
+    gain.gain.linearRampToValueAtTime(peakGain, startTime + 0.012);
+    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+
+    osc.connect(gain);
+    gain.connect(this.biteGain);
+    this.trackBiteOscillator(osc);
+    osc.start(startTime);
+    osc.stop(startTime + duration + 0.02);
+  }
+
+  private trackBiteOscillator(osc: OscillatorNode): void {
+    this.activeBiteOscillators.add(osc);
+    osc.onended = () => {
+      this.activeBiteOscillators.delete(osc);
+    };
+  }
+
+  private speakBiteLine(text: string, pitch: number, rate: number): void {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    if (this.muted || this.biteSoundVolume <= 0.02) return;
+    try {
+      if (window.speechSynthesis.speaking) {
+        window.speechSynthesis.cancel();
+      }
+      const utter = new SpeechSynthesisUtterance(text);
+      utter.pitch = pitch;
+      utter.rate = rate;
+      utter.volume = clamp(this.biteSoundVolume * 0.88, 0.05, 1.0);
+      this.biteSpeechActive = true;
+      utter.onend = () => {
+        this.biteSpeechActive = false;
+      };
+      utter.onerror = () => {
+        this.biteSpeechActive = false;
+      };
+      window.speechSynthesis.speak(utter);
+    } catch {
+      this.biteSpeechActive = false;
+    }
   }
 
   // --- Shared Audio Primitives ---

@@ -1,6 +1,9 @@
-import { Tv, User } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Settings, ShieldAlert, Tv, User } from 'lucide-react';
 import {
   ActiveChallenge,
+  BiteNotification,
+  BiteStatistics,
   CompanionConnectionState,
   DeviceRole,
   DifficultyLevel,
@@ -15,6 +18,8 @@ import { LlmConnectionStatus } from '../ai/LocalLlmService';
 interface GameHudProps {
   phase: GamePhase;
   stats: GameStats;
+  biteStats: BiteStatistics;
+  biteNotification: BiteNotification | null;
   effectiveDifficulty: DifficultyLevel;
   autoDifficulty: boolean;
   gestureState: GestureState;
@@ -31,8 +36,11 @@ interface GameHudProps {
   playerDisplayName: string;
   isLoggedIn: boolean;
   onRequestSwarmTactic: () => void;
+  onOpenBiteHistory: () => void;
+  onResetBiteMarks: () => void;
   onOpenTvCast: () => void;
   onOpenAccount: () => void;
+  onOpenSettings: () => void;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -64,6 +72,8 @@ function formatGestureLabel(state: GestureState, handsCount: number): { text: st
 export function GameHud({
   phase,
   stats,
+  biteStats,
+  biteNotification,
   effectiveDifficulty,
   autoDifficulty,
   gestureState,
@@ -80,9 +90,35 @@ export function GameHud({
   playerDisplayName,
   isLoggedIn,
   onRequestSwarmTactic,
+  onOpenBiteHistory,
+  onResetBiteMarks,
   onOpenTvCast,
   onOpenAccount,
+  onOpenSettings,
 }: GameHudProps) {
+  const [settingsAnimating, setSettingsAnimating] = useState(false);
+  const settingsAnimTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (settingsAnimTimerRef.current !== null) {
+        window.clearTimeout(settingsAnimTimerRef.current);
+      }
+    };
+  }, []);
+
+  const handleSettingsClick = () => {
+    setSettingsAnimating(true);
+    if (settingsAnimTimerRef.current !== null) {
+      window.clearTimeout(settingsAnimTimerRef.current);
+    }
+    settingsAnimTimerRef.current = window.setTimeout(() => {
+      setSettingsAnimating(false);
+      settingsAnimTimerRef.current = null;
+    }, 280);
+    onOpenSettings();
+  };
+
   const gestureInfo = formatGestureLabel(gestureState, handsCount);
   const isTvMode = deviceRole === 'TV_DISPLAY';
 
@@ -101,10 +137,26 @@ export function GameHud({
           <CompactMetric label="Score" value={stats.score.toLocaleString()} accent="text-[#C8F542]" />
           <CompactMetric label="Killed" value={String(stats.mosquitoesKilled)} className="hidden min-[520px]:flex" />
           <CompactMetric label="Left" value={String(stats.mosquitoesRemaining)} />
+          <button
+            type="button"
+            onClick={onOpenBiteHistory}
+            className="flex items-baseline gap-1 whitespace-nowrap cursor-pointer"
+            title="Open bite counter and history"
+          >
+            <span className="text-[10px] font-medium text-slate-400">Bites</span>
+            <span
+              className={`font-mono text-xs font-bold tabular-nums ${
+                biteStats.totalBites > 0 ? 'text-[#FB7185]' : 'text-[#F4F7F2]'
+              }`}
+            >
+              {biteStats.totalBites}
+            </span>
+          </button>
           <CompactMetric
             label="Combo"
             value={`${stats.currentCombo}x`}
             accent={stats.currentCombo >= 3 ? 'text-[#FF6B35]' : 'text-[#F4F7F2]'}
+            className="hidden min-[410px]:flex"
           />
           <CompactMetric
             label="Acc"
@@ -137,6 +189,25 @@ export function GameHud({
             title={isLoggedIn ? `${playerDisplayName} (Account)` : `${playerDisplayName} · Sign in optional`}
           >
             <User className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleSettingsClick}
+            className={`group inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-[#1B231E] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[#C8F542]/50 hover:text-[#C8F542] motion-safe:active:scale-90 cursor-pointer ${
+              settingsAnimating
+                ? 'border-[#C8F542]/65 bg-[#232F27] text-[#C8F542] motion-safe:scale-95'
+                : 'border-white/15 text-[#F4F7F2]'
+            }`}
+            aria-label="Open settings and game controls"
+            title="Settings & Game Controls"
+          >
+            <Settings
+              className={`h-4 w-4 motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                settingsAnimating
+                  ? 'motion-safe:rotate-90 motion-safe:scale-110'
+                  : 'motion-safe:group-hover:rotate-45'
+              }`}
+            />
           </button>
         </div>
       </div>
@@ -235,11 +306,33 @@ export function GameHud({
             accent={stats.currentCombo >= 3 ? 'text-[#FF6B35]' : 'text-[#F4F7F2]'}
             large={isTvMode}
           />
+          <button
+            type="button"
+            onClick={onOpenBiteHistory}
+            className="flex items-baseline gap-1.5 whitespace-nowrap transition-opacity hover:opacity-85 cursor-pointer"
+            title="Open mosquito bite counter and history panel"
+          >
+            <span className={isTvMode ? 'text-xs font-medium text-slate-400' : 'text-[11px] font-medium text-slate-400'}>
+              Bites
+            </span>
+            <span
+              className={`font-mono font-bold tabular-nums ${isTvMode ? 'text-base' : 'text-sm'} ${
+                biteStats.totalBites > 0 ? 'text-[#FB7185]' : 'text-[#F4F7F2]'
+              }`}
+            >
+              {biteStats.totalBites}
+            </span>
+            {biteStats.activeBiteMarks > 0 && (
+              <span className="hidden font-mono text-[11px] text-[#FF8A5C] tabular-nums xl:inline">
+                ({biteStats.activeBiteMarks} active)
+              </span>
+            )}
+          </button>
           <MetricItem label="Time" value={formatTime(stats.elapsedSeconds)} large={isTvMode} />
           <button
             type="button"
             onClick={onOpenAccount}
-            className={`inline-flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            className={`inline-flex h-8 items-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
               isLoggedIn
                 ? 'border-[#C8F542]/35 bg-[#1D2A20] text-[#C8F542] hover:bg-[#253628]'
                 : 'border-white/10 bg-[#19211C] text-slate-200 hover:border-white/25 hover:text-white'
@@ -249,8 +342,71 @@ export function GameHud({
             <User className="h-3.5 w-3.5 shrink-0" />
             <span className="max-w-[96px] truncate">{playerDisplayName}</span>
           </button>
+          <button
+            type="button"
+            onClick={handleSettingsClick}
+            className={`group inline-flex items-center justify-center rounded-lg border bg-[#1B231E] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[#C8F542]/50 hover:bg-[#232F27] hover:text-[#C8F542] motion-safe:active:scale-90 shrink-0 cursor-pointer ${
+              isTvMode ? 'h-9 w-9' : 'h-8 w-8'
+            } ${
+              settingsAnimating
+                ? 'border-[#C8F542]/65 bg-[#232F27] text-[#C8F542] motion-safe:scale-95'
+                : 'border-white/15 text-[#F4F7F2]'
+            }`}
+            aria-label="Open settings and game controls"
+            title="Settings & Game Controls"
+          >
+            <Settings
+              className={`${
+                isTvMode ? 'h-4.5 w-4.5' : 'h-4 w-4'
+              } motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)] ${
+                settingsAnimating
+                  ? 'motion-safe:rotate-90 motion-safe:scale-110'
+                  : 'motion-safe:group-hover:rotate-45'
+              }`}
+            />
+          </button>
         </div>
       </div>
+
+      {/* Real-time Bite Notification Banner (visible on all screen sizes when a bite or mid-bite kill triggers) */}
+      {biteNotification && (
+        <div className="flex justify-center px-1">
+          <div
+            role="status"
+            aria-live="polite"
+            className={`pointer-events-auto flex max-w-full items-center gap-2.5 rounded-xl border px-3.5 py-2 text-xs shadow-lg backdrop-blur-md sm:text-sm ${
+              biteNotification.kind === 'BITING_KILL'
+                ? 'border-[#C8F542]/45 bg-[#17241A]/90 text-[#F4F7F2]'
+                : 'border-[#FB7185]/45 bg-[#261217]/90 text-[#FFF1F2]'
+            }`}
+          >
+            <ShieldAlert
+              className={`h-4 w-4 shrink-0 ${
+                biteNotification.kind === 'BITING_KILL' ? 'text-[#C8F542]' : 'text-[#FB7185]'
+              }`}
+            />
+            <span className="truncate font-bold tracking-tight">{biteNotification.message}</span>
+            <div className="flex shrink-0 items-center gap-2 pl-1">
+              <button
+                type="button"
+                onClick={onOpenBiteHistory}
+                className="text-[11px] font-semibold text-slate-200 underline decoration-white/35 underline-offset-2 hover:text-[#C8F542] whitespace-nowrap cursor-pointer"
+              >
+                History
+              </button>
+              {biteStats.activeBiteMarks > 0 && (
+                <button
+                  type="button"
+                  onClick={onResetBiteMarks}
+                  className="text-[11px] font-semibold text-[#FDA4AF] underline decoration-[#FB7185]/45 underline-offset-2 hover:text-white whitespace-nowrap cursor-pointer"
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Lightweight AI commentary & active challenge bar during play (desktop/TV with adequate height only) */}
       {phase === GamePhase.PLAYING && (

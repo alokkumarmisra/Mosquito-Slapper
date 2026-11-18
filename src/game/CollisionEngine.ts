@@ -92,16 +92,18 @@ export class CollisionEngine {
           m.screenX - attack.position.x * viewportW,
           m.screenY - attack.position.y * viewportH,
         );
-        const sameFaceZoneBonus =
-          attack.faceZone &&
-          m.landingZone === attack.faceZone &&
+        const matchesLandedRegion =
+          (attack.faceZone && m.landingZone === attack.faceZone) ||
+          (attack.bodyRegion && m.landingBodyRegion === attack.bodyRegion);
+        const sameRegionBonus =
+          matchesLandedRegion &&
           (m.animState === 'LANDED' || m.animState === 'APPROACHING_LANDING')
             ? 1.35
             : 1.0;
 
         if (
           minDist <= attackRadiusPx + m.hitboxRadiusPx ||
-          directPosDist <= attackRadiusPx * sameFaceZoneBonus + m.hitboxRadiusPx
+          directPosDist <= attackRadiusPx * sameRegionBonus + m.hitboxRadiusPx
         ) {
           hitList.push(m);
         }

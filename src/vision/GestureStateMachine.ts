@@ -1,5 +1,7 @@
 import {
   AttackEvent,
+  BodyRegionId,
+  BodyTrackingFrame,
   FaceAnchor,
   FaceLandingZone,
   GameSettings,
@@ -9,6 +11,7 @@ import {
   Point2D,
   TrackedHand,
 } from '../types/game';
+import { isFaceLandingZone } from './BodyTracker';
 import { ALL_FACE_LANDING_ZONES } from './FaceTracker';
 
 export interface GestureFrameOutput {
@@ -95,6 +98,7 @@ export class GestureStateMachine {
     viewportWidth: number,
     mosquitoes?: MosquitoEntity[],
     faceAnchor?: FaceAnchor,
+    bodyFrame?: BodyTrackingFrame,
   ): GestureFrameOutput {
     // Resolution- and DPR-independent hit radius (consistent feel from 320px phones to 4K TVs)
     const normalizedHitRadius = settings.hitDetectionRadius / Math.max(1080, Math.min(1440, viewportWidth || 1280));
@@ -139,23 +143,24 @@ export class GestureStateMachine {
       };
     }
 
-    // 3. Direct FACE / HEAD SMACK check:
-    // When a mosquito is perched anywhere on the player's head, forehead, nose, or cheeks,
-    // raising a hand to hit/pat that spot kills it immediately on contact (even when slapping
-    // straight inward toward your face with low 2D sideways velocity).
-    if (mosquitoes && mosquitoes.length > 0 && faceAnchor?.detected) {
-      const faceSmack = this.evaluateFaceZoneSmack(
+    // 3. Direct FACE / BODY SMACK check:
+    // When a mosquito is perched/biting anywhere on the player's face, neck, arms, hands, or legs,
+    // swatting or patting that spot kills it immediately on contact.
+    const hasTrackedBody = Boolean(faceAnchor?.detected || (bodyFrame && bodyFrame.visibleRegions.length > 0));
+    if (mosquitoes && mosquitoes.length > 0 && hasTrackedBody) {
+      const bodySmack = this.evaluateFaceZoneSmack(
         hands,
         mosquitoes,
         faceAnchor,
         nowMs,
         settings,
         viewportWidth,
+        bodyFrame,
       );
-      if (faceSmack) {
+      if (bodySmack) {
         return {
           state: GestureState.ATTACK_CONFIRMED,
-          attack: faceSmack,
+          attack: bodySmack,
           clapReadiness: 0,
           slapReadiness: 1,
           palmDistance: this.measurePalmDistance(hands),
@@ -370,26 +375,34 @@ export class GestureStateMachine {
     nowMs: number,
     settings: GameSettings,
     viewportWidth: number,
+    bodyFrame?: BodyTrackingFrame,
   ): AttackEvent | null {
     const normalizedHitRadius = settings.hitDetectionRadius / Math.max(1080, Math.min(1440, viewportWidth || 1280));
+    const hasTrackedBody = Boolean(faceAnchor?.detected || (bodyFrame && bodyFrame.visibleRegions.length > 0));
 
-    if (nowMs < this.cooldownUntil || hands.length === 0 || !faceAnchor?.detected || !faceAnchor.zones) {
+    if (nowMs < this.cooldownUntil || hands.length === 0 || !hasTrackedBody) {
       this.syncFaceOverlapState(hands, mosquitoes, faceAnchor, normalizedHitRadius);
       return null;
     }
 
-    const perched = mosquitoes.filter(
-      (m) =>
-        m.alive &&
-        Boolean(m.landingZone) &&
-        (m.animState === 'LANDED' ||
-          (m.animState === 'APPROACHING_LANDING' &&
-            faceAnchor.zones[m.landingZone!] &&
-            Math.hypot(
-              m.x - faceAnchor.zones[m.landingZone!].point.x,
-              m.y - faceAnchor.zones[m.landingZone!].point.y,
-            ) < 0.08)),
-    );
+    const perched = mosquitoes.filter((m) => {
+      if (!m.alive) return false;
+      const targetRegion = m.landingBodyRegion ?? m.landingZone;
+      if (!targetRegion) return false;
+      if (m.animState === 'LANDED') return true;
+      if (m.animState === 'APPROACHING_LANDING') {
+        const bodyPt = bodyFrame?.regions[targetRegion]?.point;
+        const facePt =
+          isFaceLandingZone(targetRegion) && faceAnchor?.zones
+            ? faceAnchor.zones[targetRegion]?.point
+            : undefined;
+        const anchorPt = bodyPt ?? facePt;
+        if (anchorPt && Math.hypot(m.x - anchorPt.x, m.y - anchorPt.y) < 0.085) {
+          return true;
+        }
+      }
+      return false;
+    });
 
     if (perched.length === 0) {
       this.syncFaceOverlapState(hands, mosquitoes, faceAnchor, normalizedHitRadius);
@@ -406,28 +419,39 @@ export class GestureStateMachine {
         .filter((pt) => nowMs - pt.time <= 110)
         .map((pt) => ({ x: pt.x, y: pt.y }));
 
-      // Track baseline overlap with all 5 facial zones so a stationary hand already resting on skin doesn't auto-fire
-      for (const zk of ALL_FACE_LANDING_ZONES) {
-        const za = faceAnchor.zones[zk];
-        if (!za) continue;
-        const zoneRadius = Math.max(za.radius * 1.15, hand.palmRadius * 0.95, 0.055);
-        if (this.minContactDistance(contactPoints, recentTrail, za.point.x, za.point.y) <= zoneRadius) {
-          nextZoneOverlap.add(`${hand.side}:${zk}`);
+      if (faceAnchor?.detected && faceAnchor.zones) {
+        for (const zk of ALL_FACE_LANDING_ZONES) {
+          const za = faceAnchor.zones[zk];
+          if (!za) continue;
+          const zoneRadius = Math.max(za.radius * 1.15, hand.palmRadius * 0.95, 0.055);
+          if (this.minContactDistance(contactPoints, recentTrail, za.point.x, za.point.y) <= zoneRadius) {
+            nextZoneOverlap.add(`${hand.side}:${zk}`);
+          }
         }
       }
 
       if (triggeredAttack) continue;
 
       for (const m of perched) {
-        const zoneKey = m.landingZone as FaceLandingZone;
-        const zone = faceAnchor.zones[zoneKey];
+        const regionKey = (m.landingBodyRegion ?? m.landingZone) as BodyRegionId;
+        // Do not let the bitten hand accidentally auto-slap itself without brisk motion
+        const isSameHand =
+          (regionKey === 'LEFT_HAND' && hand.side === 'Left') ||
+          (regionKey === 'RIGHT_HAND' && hand.side === 'Right');
+        if (isSameHand && hand.speed < 0.65) continue;
+
+        const faceZoneKey: FaceLandingZone | undefined = isFaceLandingZone(regionKey)
+          ? regionKey
+          : undefined;
+        const faceZoneAnchor = faceZoneKey && faceAnchor?.zones ? faceAnchor.zones[faceZoneKey] : undefined;
+        const bodyRegionAnchor = bodyFrame?.regions[regionKey];
         const mosqKey = `${hand.side}:${m.id}`;
-        const zoneOverlapKey = `${hand.side}:${zoneKey}`;
+        const zoneOverlapKey = `${hand.side}:${regionKey}`;
 
         const smackRadius = Math.max(
           hand.palmRadius * 1.25,
           normalizedHitRadius * 1.05,
-          zone ? zone.radius * 1.15 : 0.06,
+          faceZoneAnchor ? faceZoneAnchor.radius * 1.15 : bodyRegionAnchor ? bodyRegionAnchor.scale * 1.2 : 0.06,
           0.064,
         );
 
@@ -440,7 +464,6 @@ export class GestureStateMachine {
           const wasAlreadyOnMosq = this.prevLandedMosqOverlap.has(mosqKey);
           const wasAlreadyRestingOnZone = this.prevFaceZoneOverlap.has(zoneOverlapKey);
 
-          // Trigger immediately if hand freshly arrived onto the mosquito/spot OR taps/smacks over it
           const freshArrival = !wasAlreadyOnMosq && (!wasAlreadyRestingOnZone || hand.speed >= 0.14);
           const activeTapOrSlap = hand.speed >= 0.28;
 
@@ -455,7 +478,7 @@ export class GestureStateMachine {
                   ];
 
             triggeredAttack = {
-              id: `atk-faceslap-${++this.attackCounter}`,
+              id: `atk-bodyslap-${++this.attackCounter}`,
               kind: 'SLAP',
               timestamp: nowMs,
               position: { x: m.x, y: m.y },
@@ -463,7 +486,8 @@ export class GestureStateMachine {
               radius: Math.max(normalizedHitRadius * 1.08, smackRadius * 0.95),
               trajectory,
               handSide: hand.side,
-              faceZone: zoneKey,
+              faceZone: faceZoneKey,
+              bodyRegion: regionKey,
             };
 
             this.triggerConfirmedCooldown(nowMs, Math.min(260, settings.attackCooldownMs));

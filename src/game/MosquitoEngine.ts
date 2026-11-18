@@ -1,5 +1,10 @@
 import { DIFFICULTY_PROFILES } from '../config/defaults';
 import {
+  BodyLandmarkReference,
+  BodyRegionAnchor,
+  BodyRegionCategory,
+  BodyRegionId,
+  BodyTrackingFrame,
   DifficultyLevel,
   FaceAnchor,
   FaceLandingEvent,
@@ -11,6 +16,11 @@ import {
   SwarmAcousticMetrics,
   TrackedHand,
 } from '../types/game';
+import {
+  BODY_REGION_CATEGORY,
+  BODY_REGION_LABELS,
+  isFaceLandingZone,
+} from '../vision/BodyTracker';
 import { ALL_FACE_LANDING_ZONES, FACE_ZONE_LABELS } from '../vision/FaceTracker';
 
 const ALL_PATTERNS: FlightPattern[] = [
@@ -23,13 +33,15 @@ const ALL_PATTERNS: FlightPattern[] = [
   'RETREAT_CAMERA',
 ];
 
-const ZONE_LANDING_TAUNTS: Record<FaceLandingZone, string[]> = {
-  HEAD: ['King of your head!', 'Nice hair landing pad!', 'Up top, human!'],
-  FOREHEAD: ['Cozy forehead!', 'Right between the brows!', 'Prime forehead real estate!'],
-  NOSE: ['Boop! On your nose!', 'Don’t cross your eyes!', 'Nose snack time!'],
-  LEFT_CHEEK: ['Sweet cheek perch!', 'Don’t slap yourself!', 'Cheeky landing!'],
-  RIGHT_CHEEK: ['Comfy right cheek!', 'Free cheek buffet!', 'Too close to swat!'],
+const CATEGORY_LANDING_TAUNTS: Record<BodyRegionCategory, string[]> = {
+  FACE: ['Right on your face!', 'Prime cheek perch!', 'Don’t slap yourself!', 'Boop! Snack time!'],
+  NECK: ['Ooh, cozy neck!', 'Right on your neck!', 'Ticklish spot!'],
+  ARM: ['Free arm buffet!', 'Nice arm landing pad!', 'Sippin’ on your arm!'],
+  HAND: ['Landed on your hand!', 'Bold perch right here!', 'Hold still!'],
+  LEG: ['Sneaky leg snack!', 'Down on your leg!', 'Got your leg!'],
 };
+
+const ESCAPE_TAUNTS = ['Gotcha! Hehe!', 'Yummy snack!', 'Too slow!', 'Buzzed & fed!'];
 
 function randRange(min: number, max: number): number {
   return min + Math.random() * (max - min);
@@ -43,8 +55,8 @@ export class MosquitoEngine {
   private mosquitoes: MosquitoEntity[] = [];
   private idCounter = 0;
   private patternBias: Partial<Record<FlightPattern, number>> = {};
-  private nextFaceLandingMs = 0;
-  private lastLandingZone: FaceLandingZone | null = null;
+  private nextBodyLandingMs = 0;
+  private lastLandingRegion: BodyRegionId | null = null;
   private prevFaceCenter: Point2D | null = null;
 
   public getMosquitoes(): MosquitoEntity[] {
@@ -96,7 +108,6 @@ export class MosquitoEngine {
       };
     }
 
-    // Logarithmic + linear blend so 1, 5, 10, 20, and 40+ mosquitoes produce distinct density tiers
     const countDensity = clamp(Math.log2(livingCount + 1) / 5.2, 0, 1);
     const energyDensity = clamp(totalAcousticEnergy / 12, 0, 1);
     const densityFactor = clamp(countDensity * 0.65 + energyDensity * 0.35, 0, 1);
@@ -116,8 +127,8 @@ export class MosquitoEngine {
 
   public reset(initialCount: number, viewportW: number, viewportH: number, difficulty: DifficultyLevel): void {
     this.mosquitoes = [];
-    this.nextFaceLandingMs = 0;
-    this.lastLandingZone = null;
+    this.nextBodyLandingMs = 0;
+    this.lastLandingRegion = null;
     this.prevFaceCenter = null;
     this.addMosquitoes(initialCount, viewportW, viewportH, difficulty);
   }
@@ -159,6 +170,13 @@ export class MosquitoEngine {
     chosen.tauntExpiresAt = nowMs + 2800;
   }
 
+  public assignActiveBiteId(mosquitoId: string, biteId: string): void {
+    const m = this.mosquitoes.find((item) => item.id === mosquitoId);
+    if (m) {
+      m.activeBiteId = biteId;
+    }
+  }
+
   public killMosquito(id: string): MosquitoEntity | null {
     const m = this.mosquitoes.find((item) => item.id === id && item.alive);
     if (!m) return null;
@@ -168,11 +186,7 @@ export class MosquitoEngine {
     m.deathTimer = 0;
     m.deathSpin = (Math.random() > 0.5 ? 1 : -1) * randRange(9, 15);
     m.tauntText = undefined;
-    m.landingZone = undefined;
-    m.landingOffset = undefined;
-    m.landingTimer = undefined;
-    m.landingDuration = undefined;
-    m.landingProgress = undefined;
+    this.clearLandingFields(m);
     return m;
   }
 
@@ -185,19 +199,21 @@ export class MosquitoEngine {
     hands: TrackedHand[],
     nowMs: number,
     faceAnchor?: FaceAnchor,
-    allowFaceLanding = true,
+    allowLanding = true,
+    bodyFrame?: BodyTrackingFrame,
   ): FaceLandingEvent[] {
     const dt = Math.min(0.05, Math.max(0.001, dtSec));
     const profile = DIFFICULTY_PROFILES[effectiveDifficulty];
     const speedFactor = profile.speedScale * settings.mosquitoSpeedMultiplier;
     const events: FaceLandingEvent[] = [];
 
-    const faceVisible = Boolean(faceAnchor?.detected && faceAnchor.zones);
-    const faceLandingAllowed = Boolean(allowFaceLanding && settings.enableFaceLanding && faceVisible);
+    const biteCfg = settings.bites;
+    const eligibleRegions = this.getEligibleRegions(settings, faceAnchor, bodyFrame);
+    const anyLandingAllowed = allowLanding && eligibleRegions.length > 0;
 
-    // Measure rapid head shake speed so shaking your head vigorously can startle landed mosquitoes
+    // Measure rapid head shake speed so shaking vigorously can startle landed face mosquitoes
     let headShakeSpeed = 0;
-    if (faceVisible && faceAnchor) {
+    if (faceAnchor?.detected) {
       if (this.prevFaceCenter) {
         headShakeSpeed =
           Math.hypot(
@@ -210,31 +226,40 @@ export class MosquitoEngine {
       this.prevFaceCenter = null;
     }
 
-    // Periodic random face-landing scheduler: picks a random head/forehead/nose/cheek zone
-    if (faceLandingAllowed && faceAnchor) {
-      if (this.nextFaceLandingMs === 0) {
-        this.nextFaceLandingMs = nowMs + randRange(2200, 3800);
-      } else if (nowMs >= this.nextFaceLandingMs) {
-        this.tryScheduleFaceLanding(faceAnchor, effectiveDifficulty);
-        const intervalMin =
+    // Randomized staggered body/face landing scheduler (never lands all mosquitoes simultaneously)
+    if (anyLandingAllowed) {
+      const prob = clamp(biteCfg.landingProbability, 0.05, 1.0);
+      if (this.nextBodyLandingMs === 0) {
+        const initDelay = randRange(1600, 3200) / Math.max(0.45, prob);
+        this.nextBodyLandingMs = nowMs + clamp(initDelay, 1200, 5500);
+      } else if (nowMs >= this.nextBodyLandingMs) {
+        // Individual probability roll scaled by user's landingProbability setting
+        if (Math.random() <= Math.min(0.95, 0.25 + prob * 0.75)) {
+          this.tryScheduleBodyLanding(eligibleRegions, effectiveDifficulty, faceAnchor, bodyFrame);
+        }
+        const baseMin =
           effectiveDifficulty === DifficultyLevel.EXTREME
-            ? 2400
+            ? 1900
             : effectiveDifficulty === DifficultyLevel.HARD
-              ? 3000
+              ? 2400
               : effectiveDifficulty === DifficultyLevel.EASY
-                ? 4800
-                : 3500;
-        const intervalMax =
+                ? 4200
+                : 2900;
+        const baseMax =
           effectiveDifficulty === DifficultyLevel.EXTREME
-            ? 4600
+            ? 3800
             : effectiveDifficulty === DifficultyLevel.HARD
-              ? 5600
+              ? 4800
               : effectiveDifficulty === DifficultyLevel.EASY
-                ? 8200
-                : 6600;
-        this.nextFaceLandingMs = nowMs + randRange(intervalMin, intervalMax);
+                ? 7200
+                : 5600;
+        const probPace = 1.45 - prob * 0.85; // Higher probability = shorter interval between attempts
+        this.nextBodyLandingMs = nowMs + randRange(baseMin * probPace, baseMax * probPace);
       }
     }
+
+    const minBiteDur = clamp(biteCfg.minBitingDurationSec, 1.0, 6.0);
+    const maxBiteDur = clamp(Math.max(minBiteDur + 0.2, biteCfg.maxBitingDurationSec), 1.2, 8.0);
 
     for (let i = this.mosquitoes.length - 1; i >= 0; i--) {
       const m = this.mosquitoes[i];
@@ -259,105 +284,157 @@ export class MosquitoEngine {
         m.tauntExpiresAt = undefined;
       }
 
-      // --- SPECIAL STATE A: LANDED ON PERSON'S FACE (Head / Forehead / Nose / Cheek) ---
+      // --- SPECIAL STATE A: LANDED & BITING ON BODY / FACE ---
       if (m.pattern === 'LANDED_ON_FACE') {
-        const zoneKey = m.landingZone;
-        const zone = zoneKey && faceAnchor?.zones ? faceAnchor.zones[zoneKey] : undefined;
+        const region = m.landingBodyRegion;
+        const resolved = region
+          ? this.resolveLandingTarget(region, m.landingLandmarkRef, m.landingOffset, faceAnchor, bodyFrame)
+          : null;
 
-        if (!faceLandingAllowed || !faceAnchor || !zone || !zoneKey) {
-          this.launchOffFace(m, effectiveDifficulty, false);
+        if (!allowLanding || !region || !resolved || !this.isRegionAllowedBySettings(region, settings)) {
+          this.launchOffBody(m, effectiveDifficulty, false);
           continue;
         }
 
         m.landingTimer = (m.landingTimer ?? 0) + dt;
-        m.landingProgress = Math.min(1, (m.landingProgress ?? 0) + dt * 4.2);
-        m.bitePulsePhase = (m.bitePulsePhase ?? 0) + dt * 6.8;
-        // Wings stay mostly folded while perched with occasional tiny twitch
-        m.wingPhase += dt * 7;
+        m.landingProgress = Math.min(1, (m.landingProgress ?? 0) + dt * 4.5);
+        m.bitePulsePhase = (m.bitePulsePhase ?? 0) + dt * 8.2;
+        // Wings stay folded with subtle biting quiver
+        m.wingPhase += dt * 7.5;
 
-        // Rotate tiny organic perch offset along live head roll so bug stays anatomically anchored
-        const off = m.landingOffset ?? { x: 0, y: 0 };
-        const cosR = Math.cos(faceAnchor.headRollRad);
-        const sinR = Math.sin(faceAnchor.headRollRad);
-        const targetX = clamp(zone.point.x + off.x * cosR - off.y * sinR, 0.03, 0.97);
-        const targetY = clamp(zone.point.y + off.x * sinR + off.y * cosR, 0.05, 0.95);
-
-        // Tight responsive tracking onto the person's moving head/nose/forehead/cheek
+        // Smooth tight tracking glued onto the player's moving face/arm/neck/hand/leg
         const followT = Math.min(1, dt * 26);
-        m.x += (targetX - m.x) * followT;
-        m.y += (targetY - m.y) * followT;
+        m.x += (resolved.point.x - m.x) * followT;
+        m.y += (resolved.point.y - m.y) * followT;
         m.z += (0.14 - m.z) * Math.min(1, dt * 10);
         m.vx = 0;
         m.vy = 0;
         m.vz = 0;
         m.speed = 0;
         m.animState = 'LANDED';
-        m.rotation = clamp(faceAnchor.headRollRad + (m.landedAngleOffset ?? 0), -0.85, 0.85);
+        m.rotation = clamp(resolved.axisAngleRad * 0.4 + (m.landedAngleOffset ?? 0), -0.95, 0.95);
         m.depthScale = this.computeDepthScale(m.z);
         m.screenX = m.x * viewportW;
         m.screenY = m.y * viewportH;
 
         const baseScalePx = Math.max(18, Math.min(viewportW, viewportH) * 0.036);
-        // Slightly generous hitbox while perched so swatting it off your face feels crisp & fair
         m.hitboxRadiusPx = baseScalePx * m.baseSize * m.depthScale * Math.max(1.0, profile.hitboxScale);
 
-        // Real mosquitoes go eerily quiet the instant they land on skin!
+        // Real mosquitoes go quiet right after landing on skin
         m.buzzVolume = 0.04;
         m.buzzPitchHz = m.baseBuzzPitchHz * 0.88;
         m.trail = [];
 
-        // Check takeoff conditions: timer expired or player vigorously shakes head
-        const startledByHeadShake = headShakeSpeed > 1.85 && m.landingTimer > 0.65;
-        const finishedPerching = m.landingTimer >= (m.landingDuration ?? 4.2);
+        const category = BODY_REGION_CATEGORY[region];
+        const label = BODY_REGION_LABELS[region];
 
-        if (finishedPerching || startledByHeadShake) {
+        // Confirm bite EXACTLY ONCE per landing when piercing timer elapses
+        const triggerTime = m.biteTriggerTimeSec ?? 0.65;
+        if (biteCfg.enabled && !m.biteConfirmed && m.landingTimer >= triggerTime) {
+          m.biteConfirmed = true;
+          m.biteConfirmedAt = nowMs;
+          events.push({
+            type: 'BITE_CONFIRMED',
+            mosquitoId: m.id,
+            zone: isFaceLandingZone(region) ? region : undefined,
+            region,
+            category,
+            zoneLabel: label,
+            point: { x: m.x, y: m.y },
+            landmarkRef: m.landingLandmarkRef,
+            depthScale: resolved.depthScale,
+          });
+        }
+
+        // Check takeoff conditions: biting timer completed OR vigorous head shake (for face bites)
+        const startledByHeadShake = category === 'FACE' && headShakeSpeed > 1.9 && m.landingTimer > 0.6;
+        const finishedBiting = m.landingTimer >= (m.landingDuration ?? 3.0);
+
+        if (finishedBiting) {
+          // Safety guard: if duration was very short and bite wasn't confirmed yet, confirm once before escape
+          if (biteCfg.enabled && !m.biteConfirmed) {
+            m.biteConfirmed = true;
+            m.biteConfirmedAt = nowMs;
+            events.push({
+              type: 'BITE_CONFIRMED',
+              mosquitoId: m.id,
+              zone: isFaceLandingZone(region) ? region : undefined,
+              region,
+              category,
+              zoneLabel: label,
+              point: { x: m.x, y: m.y },
+              landmarkRef: m.landingLandmarkRef,
+              depthScale: resolved.depthScale,
+            });
+          }
+
+          events.push({
+            type: 'ESCAPED_AFTER_BITE',
+            mosquitoId: m.id,
+            zone: isFaceLandingZone(region) ? region : undefined,
+            region,
+            category,
+            zoneLabel: label,
+            point: { x: m.x, y: m.y },
+          });
+          m.tauntText = ESCAPE_TAUNTS[Math.floor(Math.random() * ESCAPE_TAUNTS.length)];
+          m.tauntExpiresAt = nowMs + 1900;
+          this.launchOffBody(m, effectiveDifficulty, true);
+        } else if (startledByHeadShake) {
           events.push({
             type: 'TOOK_OFF',
             mosquitoId: m.id,
-            zone: zoneKey,
-            zoneLabel: zone.label,
+            zone: isFaceLandingZone(region) ? region : undefined,
+            region,
+            category,
+            zoneLabel: label,
             point: { x: m.x, y: m.y },
           });
-          if (finishedPerching) {
-            m.tauntText = 'Gotcha! Hehe!';
-            m.tauntExpiresAt = nowMs + 1900;
-          }
-          this.launchOffFace(m, effectiveDifficulty, true);
+          this.launchOffBody(m, effectiveDifficulty, true);
         }
         continue;
       }
 
-      // --- SPECIAL STATE B: DESCENDING TOWARD A RECOGNIZED FACE ZONE ---
+      // --- SPECIAL STATE B: APPROACHING A TARGET BODY / FACE LANDMARK ---
       if (m.pattern === 'APPROACH_FACE_ZONE') {
-        const zoneKey = m.landingZone;
-        const zone = zoneKey && faceAnchor?.zones ? faceAnchor.zones[zoneKey] : undefined;
+        const region = m.landingBodyRegion;
+        const resolved = region
+          ? this.resolveLandingTarget(region, m.landingLandmarkRef, m.landingOffset, faceAnchor, bodyFrame)
+          : null;
 
-        if (!faceLandingAllowed || !faceAnchor || !zone || !zoneKey) {
+        if (!allowLanding || !region || !resolved || !this.isRegionAllowedBySettings(region, settings)) {
           this.clearLandingFields(m);
           this.assignNextPattern(m, effectiveDifficulty);
         } else {
-          m.wingPhase += dt * 76;
           m.patternPhase += dt;
           m.patternTimer -= dt;
 
-          const off = m.landingOffset ?? { x: 0, y: 0 };
-          const cosR = Math.cos(faceAnchor.headRollRad);
-          const sinR = Math.sin(faceAnchor.headRollRad);
-          const targetX = clamp(zone.point.x + off.x * cosR - off.y * sinR, 0.04, 0.96);
-          const targetY = clamp(zone.point.y + off.x * sinR + off.y * cosR, 0.06, 0.94);
+          const targetX = resolved.point.x;
+          const targetY = resolved.point.y;
           const dx = targetX - m.x;
           const dy = targetY - m.y;
           const dist = Math.hypot(dx, dy);
 
-          // Touchdown when close enough to the facial landmark!
-          if (dist < 0.026 && Math.abs(m.z - 0.16) < 0.14) {
+          // Progressively slow wings & speed as mosquito flares for touchdown
+          const flareFactor = clamp(dist / 0.14, 0.28, 1.0);
+          m.wingPhase += dt * (44 + flareFactor * 34);
+
+          if (dist < 0.025 && Math.abs(m.z - 0.16) < 0.15) {
+            const category = BODY_REGION_CATEGORY[region];
+            const label = BODY_REGION_LABELS[region];
+            const biteDuration = randRange(minBiteDur, maxBiteDur);
+
             m.pattern = 'LANDED_ON_FACE';
             m.animState = 'LANDED';
             m.landingTimer = 0;
             m.landingProgress = 0;
             m.bitePulsePhase = 0;
-            m.landingDuration = randRange(3.2, 5.6);
-            m.landedAngleOffset = randRange(-0.24, 0.24);
+            m.landingDuration = biteDuration;
+            m.biteTriggerTimeSec = Math.min(biteDuration * 0.34, randRange(0.55, 0.92));
+            m.biteConfirmed = false;
+            m.biteConfirmedAt = undefined;
+            m.activeBiteId = undefined;
+            m.landedAngleOffset = randRange(-0.26, 0.26);
             m.x = targetX;
             m.y = targetY;
             m.z = 0.15;
@@ -374,39 +451,43 @@ export class MosquitoEngine {
             m.buzzVolume = 0.04;
             m.trail = [];
 
-            const taunts = ZONE_LANDING_TAUNTS[zoneKey];
+            const taunts = CATEGORY_LANDING_TAUNTS[category];
             m.tauntText = taunts[Math.floor(Math.random() * taunts.length)];
-            m.tauntExpiresAt = nowMs + 2400;
+            m.tauntExpiresAt = nowMs + 2200;
 
             events.push({
               type: 'LANDED',
               mosquitoId: m.id,
-              zone: zoneKey,
-              zoneLabel: zone.label,
+              zone: isFaceLandingZone(region) ? region : undefined,
+              region,
+              category,
+              zoneLabel: label,
               point: { x: m.x, y: m.y },
+              landmarkRef: m.landingLandmarkRef,
+              depthScale: resolved.depthScale,
             });
             continue;
           }
 
           if (m.patternTimer <= 0) {
-            // Took too long chasing a rapidly moving face — break off cleanly
             this.clearLandingFields(m);
             this.assignNextPattern(m, effectiveDifficulty);
           } else {
-            // Smooth homing descent with subtle spiral buzz so the approach feels lifelike
-            const approachSpeed = clamp(dist * 3.4, 0.14, 0.56) * Math.max(0.85, speedFactor * 0.92);
-            const swirlMag = Math.min(0.14, dist * 0.75);
-            const swirlX = Math.cos(m.patternPhase * 9.0) * swirlMag;
-            const swirlY = Math.sin(m.patternPhase * 8.2) * swirlMag;
+            // Smooth homing descent that visibly reduces flight speed as it closes in on the skin
+            const rawApproach = clamp(dist * 3.1, 0.08, 0.52) * Math.max(0.82, speedFactor * 0.9);
+            const approachSpeed = rawApproach * (0.45 + flareFactor * 0.55);
+            const swirlMag = Math.min(0.11, dist * 0.65);
+            const swirlX = Math.cos(m.patternPhase * 8.5) * swirlMag;
+            const swirlY = Math.sin(m.patternPhase * 7.8) * swirlMag;
 
             const dirX = dist > 0.001 ? dx / dist : 0;
             const dirY = dist > 0.001 ? dy / dist : 0;
             const desiredVx = dirX * approachSpeed + swirlX;
             const desiredVy = dirY * approachSpeed + swirlY;
 
-            m.vx += (desiredVx - m.vx) * Math.min(1, dt * 6.5);
-            m.vy += (desiredVy - m.vy) * Math.min(1, dt * 6.5);
-            m.vz += ((0.15 - m.z) * 2.6 - m.vz * 2.2) * dt;
+            m.vx += (desiredVx - m.vx) * Math.min(1, dt * 6.8);
+            m.vy += (desiredVy - m.vy) * Math.min(1, dt * 6.8);
+            m.vz += ((0.15 - m.z) * 2.7 - m.vz * 2.2) * dt;
 
             m.x = clamp(m.x + m.vx * dt, 0.03, 0.97);
             m.y = clamp(m.y + m.vy * dt, 0.05, 0.95);
@@ -425,8 +506,8 @@ export class MosquitoEngine {
             m.hitboxRadiusPx = baseScalePx * m.baseSize * m.depthScale * profile.hitboxScale;
 
             const acoustic = this.computeDepthAcoustics(m.z, m.baseBuzzPitchHz, m.speed, m.vz);
-            m.buzzVolume = clamp(acoustic.buzzVolume * 1.12, 0.1, 1.0);
-            m.buzzPitchHz = clamp(acoustic.buzzPitchHz + 38, 380, 940);
+            m.buzzVolume = clamp(acoustic.buzzVolume * 1.1, 0.1, 1.0);
+            m.buzzPitchHz = clamp(acoustic.buzzPitchHz + 34, 380, 940);
 
             m.trail.push({ x: m.screenX, y: m.screenY });
             if (m.trail.length > 5) m.trail.shift();
@@ -435,24 +516,22 @@ export class MosquitoEngine {
         }
       }
 
-      // Wing beat animation (faster when darting/escaping)
+      // --- STANDARD AUTONOMOUS FLIGHT BEHAVIORS (UNCHANGED) ---
       const wingRate = m.animState === 'DARTING' ? 78 : m.animState === 'HOVERING' ? 58 : 66;
       m.wingPhase += dt * wingRate;
 
-      // Switch movement pattern unpredictably
       m.patternTimer -= dt * profile.turnFrequency;
       if (m.patternTimer <= 0) {
         this.assignNextPattern(m, effectiveDifficulty);
       }
 
-      // Hand proximity evasion impulse (scaled by difficulty so Hard/Extreme feel clever)
+      // Hand proximity evasion impulse
       let evading = false;
       for (const hand of hands) {
         const dx = m.x - hand.palm.x;
         const dy = m.y - hand.palm.y;
         const dist = Math.hypot(dx, dy);
         if (dist < 0.17 && dist > 0.001) {
-          // Only trigger sudden escape if hand is closing in or moving briskly
           if (hand.speed > 0.45 && Math.random() < profile.escapeChance * dt * 5.2) {
             m.pattern = 'SUDDEN_ESCAPE';
             m.patternTimer = randRange(0.45, 0.9);
@@ -466,12 +545,10 @@ export class MosquitoEngine {
         }
       }
 
-      // Apply independent flight steering forces per pattern
       if (!evading) {
         this.applyPatternSteering(m, dt, speedFactor, profile.approachAggression, faceAnchor);
       }
 
-      // Soft repulsion from screen edges so mosquitoes curve organically rather than bouncing linearly
       const marginX = 0.08;
       const marginY = 0.11;
       if (m.x < marginX) m.vx += (marginX - m.x) * 4.8 * dt;
@@ -479,20 +556,16 @@ export class MosquitoEngine {
       if (m.y < marginY) m.vy += (marginY - m.y) * 4.8 * dt;
       if (m.y > 1 - marginY) m.vy -= (m.y - (1 - marginY)) * 4.8 * dt;
 
-      // Soft Z bounds [0.09 (close foreground) .. 0.98 (rear)]
       if (m.z < 0.12) m.vz += (0.12 - m.z) * 3.2 * dt;
       if (m.z > 0.94) m.vz -= (m.z - 0.94) * 3.2 * dt;
 
-      // Organic micro-jitter (characteristic mosquito bobbing)
       m.vx += Math.sin(m.patternPhase * 7.3) * 0.18 * dt * speedFactor;
       m.vy += Math.cos(m.patternPhase * 6.1) * 0.22 * dt * speedFactor;
       m.patternPhase += dt;
 
-      // Depth-based perspective speed multiplier (closer mosquitoes sweep across screen faster for realism!)
       const depthScale = this.computeDepthScale(m.z);
       const parallaxSpeed = 0.65 + depthScale * 0.52;
 
-      // Speed clamping
       const maxVel = (m.pattern === 'SUDDEN_ESCAPE' ? 0.85 : 0.48) * speedFactor;
       const currSpeed = Math.hypot(m.vx, m.vy);
       if (currSpeed > maxVel) {
@@ -502,7 +575,6 @@ export class MosquitoEngine {
       }
       m.vz = clamp(m.vz, -0.42 * speedFactor, 0.42 * speedFactor);
 
-      // Integrate 3D position
       m.x = clamp(m.x + m.vx * parallaxSpeed * dt, 0.03, 0.97);
       m.y = clamp(m.y + m.vy * parallaxSpeed * dt, 0.06, 0.94);
       m.z = clamp(m.z + m.vz * dt, 0.08, 1.0);
@@ -512,10 +584,8 @@ export class MosquitoEngine {
         const targetDir = Math.atan2(m.vy, m.vx);
         m.direction = this.lerpAngle(m.direction, targetDir, Math.min(1, dt * 10));
       }
-      // Subtle body bank tilt into turns
       m.rotation = clamp(m.vx * 1.15, -0.55, 0.55);
 
-      // Compute 3D perspective screen projection + hitbox
       m.depthScale = this.computeDepthScale(m.z);
       m.screenX = m.x * viewportW;
       m.screenY = m.y * viewportH;
@@ -523,12 +593,10 @@ export class MosquitoEngine {
       const baseScalePx = Math.max(18, Math.min(viewportW, viewportH) * 0.036);
       m.hitboxRadiusPx = baseScalePx * m.baseSize * m.depthScale * profile.hitboxScale;
 
-      // Dynamically scale each mosquito's buzz volume & pitch by its Z-depth (closer Z = louder & higher pitch)
       const acoustic = this.computeDepthAcoustics(m.z, m.baseBuzzPitchHz, m.speed, m.vz);
       m.buzzVolume = acoustic.buzzVolume;
       m.buzzPitchHz = acoustic.buzzPitchHz;
 
-      // Maintain short motion-blur trail when flying quickly
       m.trail.push({ x: m.screenX, y: m.screenY });
       if (m.trail.length > 6) {
         m.trail.shift();
@@ -538,13 +606,153 @@ export class MosquitoEngine {
     return events;
   }
 
-  private tryScheduleFaceLanding(faceAnchor: FaceAnchor, difficulty: DifficultyLevel): void {
-    const maxConcurrent =
+  private isRegionAllowedBySettings(region: BodyRegionId, settings: GameSettings): boolean {
+    const category = BODY_REGION_CATEGORY[region];
+    const b = settings.bites;
+    if (!b.enabled) {
+      // Preserve legacy Face Landing toggle if body bites are switched off
+      return category === 'FACE' && settings.enableFaceLanding && isFaceLandingZone(region);
+    }
+    switch (category) {
+      case 'FACE':
+        return b.enableFaceBites && settings.enableFaceLanding;
+      case 'ARM':
+        return b.enableArmBites;
+      case 'NECK':
+        return b.enableNeckBites;
+      case 'HAND':
+        return b.enableHandBites;
+      case 'LEG':
+        return b.enableLegBites;
+    }
+  }
+
+  private getEligibleRegions(
+    settings: GameSettings,
+    faceAnchor?: FaceAnchor,
+    bodyFrame?: BodyTrackingFrame,
+  ): BodyRegionAnchor[] {
+    const out: BodyRegionAnchor[] = [];
+    const seen = new Set<BodyRegionId>();
+
+    if (bodyFrame && bodyFrame.visibleRegions.length > 0) {
+      for (const regionId of bodyFrame.visibleRegions) {
+        const anchor = bodyFrame.regions[regionId];
+        if (!anchor) continue;
+        if (!this.isRegionAllowedBySettings(regionId, settings)) continue;
+        seen.add(regionId);
+        out.push(anchor);
+      }
+    }
+
+    // Fallback to FaceAnchor zones (e.g. TV Display Mode streaming faceAnchor without Pose)
+    if (faceAnchor?.detected && faceAnchor.zones) {
+      for (const zk of ALL_FACE_LANDING_ZONES) {
+        if (seen.has(zk)) continue;
+        if (!this.isRegionAllowedBySettings(zk, settings)) continue;
+        const za = faceAnchor.zones[zk];
+        if (!za) continue;
+        out.push({
+          region: zk,
+          category: 'FACE',
+          label: FACE_ZONE_LABELS[zk],
+          point: za.point,
+          axisAngleRad: faceAnchor.headRollRad,
+          scale: za.radius,
+          visibility: 0.95,
+          source: 'FACE',
+          primaryLandmarkIndex: zk === 'NOSE' ? 1 : zk === 'FOREHEAD' ? 151 : 10,
+        });
+      }
+    }
+
+    return out;
+  }
+
+  private resolveLandingTarget(
+    region: BodyRegionId,
+    landmarkRef: BodyLandmarkReference | undefined,
+    fallbackOffset: Point2D | undefined,
+    faceAnchor?: FaceAnchor,
+    bodyFrame?: BodyTrackingFrame,
+  ): { point: Point2D; axisAngleRad: number; depthScale: number } | null {
+    const bodyAnchor = bodyFrame?.regions[region];
+    if (bodyAnchor) {
+      let basePt: Point2D = bodyAnchor.point;
+      if (
+        bodyAnchor.segmentStart &&
+        bodyAnchor.segmentEnd &&
+        typeof landmarkRef?.segmentT === 'number'
+      ) {
+        const t = clamp(landmarkRef.segmentT, 0.1, 0.9);
+        basePt = {
+          x: bodyAnchor.segmentStart.x + (bodyAnchor.segmentEnd.x - bodyAnchor.segmentStart.x) * t,
+          y: bodyAnchor.segmentStart.y + (bodyAnchor.segmentEnd.y - bodyAnchor.segmentStart.y) * t,
+        };
+      }
+
+      const off = landmarkRef?.localOffset ?? fallbackOffset ?? { x: 0, y: 0 };
+      const refScale = Math.max(0.02, landmarkRef?.referenceScale ?? bodyAnchor.scale);
+      const scaleRatio = clamp(bodyAnchor.scale / refScale, 0.55, 1.85);
+      const cosR = Math.cos(bodyAnchor.axisAngleRad);
+      const sinR = Math.sin(bodyAnchor.axisAngleRad);
+      const lx = off.x * scaleRatio;
+      const ly = off.y * scaleRatio;
+
+      return {
+        point: {
+          x: clamp(basePt.x + lx * cosR - ly * sinR, 0.03, 0.97),
+          y: clamp(basePt.y + lx * sinR + ly * cosR, 0.04, 0.96),
+        },
+        axisAngleRad: bodyAnchor.axisAngleRad,
+        depthScale: clamp(bodyAnchor.scale / 0.055, 0.65, 1.75),
+      };
+    }
+
+    // FaceAnchor fallback
+    if (faceAnchor?.detected) {
+      let basePt: Point2D | null = null;
+      if (region === 'CHIN' && faceAnchor.chin) {
+        basePt = faceAnchor.chin;
+      } else if (isFaceLandingZone(region) && faceAnchor.zones[region]) {
+        basePt = faceAnchor.zones[region].point;
+      }
+      if (basePt) {
+        const off = landmarkRef?.localOffset ?? fallbackOffset ?? { x: 0, y: 0 };
+        const cosR = Math.cos(faceAnchor.headRollRad);
+        const sinR = Math.sin(faceAnchor.headRollRad);
+        return {
+          point: {
+            x: clamp(basePt.x + off.x * cosR - off.y * sinR, 0.03, 0.97),
+            y: clamp(basePt.y + off.x * sinR + off.y * cosR, 0.05, 0.95),
+          },
+          axisAngleRad: faceAnchor.headRollRad,
+          depthScale: clamp(faceAnchor.faceRadius / 0.14, 0.65, 1.75),
+        };
+      }
+    }
+
+    return null;
+  }
+
+  private tryScheduleBodyLanding(
+    eligibleRegions: BodyRegionAnchor[],
+    difficulty: DifficultyLevel,
+    faceAnchor?: FaceAnchor,
+    bodyFrame?: BodyTrackingFrame,
+  ): void {
+    const livingCount = this.getLivingCount();
+    if (livingCount <= 0) return;
+
+    const diffCap =
       difficulty === DifficultyLevel.EXTREME
         ? 3
         : difficulty === DifficultyLevel.EASY
           ? 1
           : 2;
+    // Never allow all mosquitoes to land simultaneously when a swarm is flying
+    const swarmCap = livingCount <= 2 ? 1 : Math.max(1, Math.floor(livingCount * 0.45));
+    const maxConcurrent = Math.min(diffCap, swarmCap);
 
     const activeLanders = this.mosquitoes.filter(
       (m) =>
@@ -552,83 +760,88 @@ export class MosquitoEngine {
     );
     if (activeLanders.length >= maxConcurrent) return;
 
-    const occupiedZones = new Set<FaceLandingZone>();
+    const occupiedRegions = new Set<BodyRegionId>();
     for (const lander of activeLanders) {
-      if (lander.landingZone) occupiedZones.add(lander.landingZone);
+      if (lander.landingBodyRegion) occupiedRegions.add(lander.landingBodyRegion);
     }
 
-    const freeZones = ALL_FACE_LANDING_ZONES.filter((z) => !occupiedZones.has(z));
-    if (freeZones.length === 0) return;
+    const freeRegions = eligibleRegions.filter((r) => !occupiedRegions.has(r.region));
+    if (freeRegions.length === 0) return;
 
-    // Prefer variety across head, forehead, nose, left cheek & right cheek
-    const variedZones =
-      freeZones.length > 1 && this.lastLandingZone
-        ? freeZones.filter((z) => z !== this.lastLandingZone)
-        : freeZones;
-    let chosenZone = variedZones[Math.floor(Math.random() * variedZones.length)];
-    let zoneAnchor = faceAnchor.zones[chosenZone];
-    if (!zoneAnchor) return;
+    // Encourage rich variety across face, neck, shoulders, arms, hands & legs
+    const varied =
+      freeRegions.length > 1 && this.lastLandingRegion
+        ? freeRegions.filter((r) => r.region !== this.lastLandingRegion)
+        : freeRegions;
 
-    const r = Math.max(0.06, faceAnchor.faceRadius);
+    // Group by category first so face doesn't drown out arms/neck/hands/legs when body is visible
+    const categories = Array.from(new Set(varied.map((r) => r.category)));
+    const pickedCategory = categories[Math.floor(Math.random() * categories.length)];
+    const catPool = varied.filter((r) => r.category === pickedCategory);
+    const chosenAnchor = catPool[Math.floor(Math.random() * catPool.length)];
+    if (!chosenAnchor) return;
+
+    // Compute unique organic skin offset in anchor-local coordinates so every bite has its own exact spot
+    const r = Math.max(0.024, chosenAnchor.scale);
     let localOffsetX = 0;
     let localOffsetY = 0;
+    let segmentT: number | undefined;
 
-    if (Math.random() < 0.34) {
-      // Free-roam anywhere on the recognized head/face oval (crown, temples, brow, cheeks, nose, jaw)
-      const angle = randRange(0, Math.PI * 2);
-      const radial = Math.sqrt(Math.random());
-      const rx = r * 0.78;
-      const ry = r * 1.05;
-      // Shift oval center slightly upward so top of head & forehead get rich coverage alongside lower face
-      const headLocalX = Math.cos(angle) * rx * radial;
-      const headLocalY = Math.sin(angle) * ry * radial - r * 0.14;
-      const cosR = Math.cos(faceAnchor.headRollRad);
-      const sinR = Math.sin(faceAnchor.headRollRad);
-      const worldX = clamp(faceAnchor.faceCenter.x + headLocalX * cosR - headLocalY * sinR, 0.05, 0.95);
-      const worldY = clamp(faceAnchor.faceCenter.y + headLocalX * sinR + headLocalY * cosR, 0.06, 0.94);
-
-      // Classify this random face/head spot to its closest recognized facial region
-      let nearestZone: FaceLandingZone = chosenZone;
-      let nearestDist = Infinity;
-      for (const zk of ALL_FACE_LANDING_ZONES) {
-        const za = faceAnchor.zones[zk];
-        if (!za) continue;
-        const d = Math.hypot(worldX - za.point.x, worldY - za.point.y);
-        if (d < nearestDist) {
-          nearestDist = d;
-          nearestZone = zk;
-        }
-      }
-      chosenZone = nearestZone;
-      zoneAnchor = faceAnchor.zones[chosenZone] ?? zoneAnchor;
-
-      // Store offset in head-local coordinates relative to the nearest zone so it follows head tilt
-      const dxW = worldX - zoneAnchor.point.x;
-      const dyW = worldY - zoneAnchor.point.y;
-      localOffsetX = dxW * cosR + dyW * sinR;
-      localOffsetY = -dxW * sinR + dyW * cosR;
-    } else {
-      // Wide organic anatomical patch across the selected facial feature so bugs don't sit on one rigid dot
-      switch (chosenZone) {
+    if (chosenAnchor.segmentStart && chosenAnchor.segmentEnd) {
+      // Along-limb position (22%..78% between shoulder->elbow, elbow->wrist, hip->knee, etc.)
+      segmentT = randRange(0.22, 0.78);
+      // Slight lateral skin offset perpendicular to bone axis
+      localOffsetX = randRange(-r * 0.22, r * 0.22);
+      localOffsetY = randRange(-r * 0.34, r * 0.34);
+    } else if (chosenAnchor.category === 'FACE') {
+      const fR = Math.max(0.06, faceAnchor?.faceRadius ?? r * 2.8);
+      switch (chosenAnchor.region) {
         case 'HEAD':
-          localOffsetX = randRange(-r * 0.56, r * 0.56);
-          localOffsetY = randRange(-r * 0.22, r * 0.22);
+          localOffsetX = randRange(-fR * 0.42, fR * 0.42);
+          localOffsetY = randRange(-fR * 0.16, fR * 0.16);
           break;
         case 'FOREHEAD':
-          localOffsetX = randRange(-r * 0.48, r * 0.48);
-          localOffsetY = randRange(-r * 0.18, r * 0.18);
+          localOffsetX = randRange(-fR * 0.38, fR * 0.38);
+          localOffsetY = randRange(-fR * 0.14, fR * 0.14);
           break;
         case 'NOSE':
-          localOffsetX = randRange(-r * 0.16, r * 0.16);
-          localOffsetY = randRange(-r * 0.24, r * 0.18);
+          localOffsetX = randRange(-fR * 0.11, fR * 0.11);
+          localOffsetY = randRange(-fR * 0.16, fR * 0.12);
           break;
-        case 'LEFT_CHEEK':
-        case 'RIGHT_CHEEK':
-          localOffsetX = randRange(-r * 0.26, r * 0.26);
-          localOffsetY = randRange(-r * 0.26, r * 0.30);
+        case 'CHIN':
+          localOffsetX = randRange(-fR * 0.18, fR * 0.18);
+          localOffsetY = randRange(-fR * 0.1, fR * 0.08);
+          break;
+        default:
+          // Left/Right cheeks
+          localOffsetX = randRange(-fR * 0.2, fR * 0.2);
+          localOffsetY = randRange(-fR * 0.2, fR * 0.22);
           break;
       }
+    } else {
+      // Neck, shoulders, elbows, hands, knees
+      localOffsetX = randRange(-r * 0.38, r * 0.38);
+      localOffsetY = randRange(-r * 0.32, r * 0.32);
     }
+
+    const landmarkRef: BodyLandmarkReference = {
+      source: chosenAnchor.source,
+      region: chosenAnchor.region,
+      primaryIndex: chosenAnchor.primaryLandmarkIndex,
+      secondaryIndex: chosenAnchor.secondaryLandmarkIndex,
+      segmentT,
+      localOffset: { x: localOffsetX, y: localOffsetY },
+      referenceScale: chosenAnchor.scale,
+    };
+
+    const resolvedNow = this.resolveLandingTarget(
+      chosenAnchor.region,
+      landmarkRef,
+      landmarkRef.localOffset,
+      faceAnchor,
+      bodyFrame,
+    );
+    const targetPt = resolvedNow?.point ?? chosenAnchor.point;
 
     const candidates = this.mosquitoes.filter(
       (m) =>
@@ -638,41 +851,52 @@ export class MosquitoEngine {
     );
     if (candidates.length === 0) return;
 
-    // Pick among the closest 3 living flying mosquitoes for a natural swoop onto the face/head
     candidates.sort(
       (a, b) =>
-        Math.hypot(a.x - zoneAnchor.point.x, a.y - zoneAnchor.point.y) -
-        Math.hypot(b.x - zoneAnchor.point.x, b.y - zoneAnchor.point.y),
+        Math.hypot(a.x - targetPt.x, a.y - targetPt.y) -
+        Math.hypot(b.x - targetPt.x, b.y - targetPt.y),
     );
     const poolSize = Math.min(3, candidates.length);
     const chosen = candidates[Math.floor(Math.random() * poolSize)];
 
     chosen.pattern = 'APPROACH_FACE_ZONE';
     chosen.animState = 'APPROACHING_LANDING';
-    chosen.patternTimer = randRange(4.0, 6.2);
+    chosen.patternTimer = randRange(4.2, 6.4);
     chosen.patternPhase = randRange(0, Math.PI * 2);
-    chosen.landingZone = chosenZone;
-    chosen.landingOffset = {
-      x: localOffsetX,
-      y: localOffsetY,
-    };
+    chosen.landingZone = isFaceLandingZone(chosenAnchor.region) ? chosenAnchor.region : undefined;
+    chosen.landingBodyRegion = chosenAnchor.region;
+    chosen.landingBodyCategory = chosenAnchor.category;
+    chosen.landingBodyLabel = chosenAnchor.label;
+    chosen.landingLandmarkRef = landmarkRef;
+    chosen.landingOffset = { x: localOffsetX, y: localOffsetY };
     chosen.landingTimer = 0;
     chosen.landingProgress = 0;
+    chosen.biteConfirmed = false;
+    chosen.biteConfirmedAt = undefined;
+    chosen.activeBiteId = undefined;
 
-    this.lastLandingZone = chosenZone;
+    this.lastLandingRegion = chosenAnchor.region;
   }
 
   private clearLandingFields(m: MosquitoEntity): void {
     m.landingZone = undefined;
+    m.landingBodyRegion = undefined;
+    m.landingBodyCategory = undefined;
+    m.landingBodyLabel = undefined;
+    m.landingLandmarkRef = undefined;
     m.landingOffset = undefined;
     m.landingTimer = undefined;
     m.landingDuration = undefined;
     m.landingProgress = undefined;
     m.bitePulsePhase = undefined;
     m.landedAngleOffset = undefined;
+    m.biteTriggerTimeSec = undefined;
+    m.biteConfirmed = undefined;
+    m.biteConfirmedAt = undefined;
+    m.activeBiteId = undefined;
   }
 
-  private launchOffFace(
+  private launchOffBody(
     m: MosquitoEntity,
     difficulty: DifficultyLevel,
     burstUpward: boolean,
@@ -692,7 +916,6 @@ export class MosquitoEngine {
   }
 
   private computeDepthCloseness(z: number): number {
-    // z = 0.08 (foreground near player) -> 1.0; z = 1.0 (far rear) -> 0.0
     return clamp((1.0 - z) / 0.92, 0, 1);
   }
 
@@ -703,11 +926,9 @@ export class MosquitoEngine {
     vz: number,
   ): { buzzVolume: number; buzzPitchHz: number } {
     const closeness = this.computeDepthCloseness(z);
-    // Nonlinear depth loudness curve: quiet in rear (~0.08), loud & intense in foreground (1.0)
     const speedEnergy = clamp(speed * 0.35, 0, 0.18);
     const buzzVolume = clamp(0.08 + Math.pow(closeness, 1.75) * 0.84 + speedEnergy * closeness, 0.06, 1.0);
 
-    // Higher wingbeat pitch as Z gets closer (+150 Hz depth rise) + speed & Z-approach Doppler shift
     const depthPitchBoost = Math.pow(closeness, 1.15) * 150;
     const speedPitchBoost = clamp(speed * 115, 0, 75);
     const zDoppler = clamp(-vz * 65, -28, 45);
@@ -781,7 +1002,6 @@ export class MosquitoEngine {
       LANDED_ON_FACE: 0,
     };
 
-    // Blend in AI-suggested swarm strategy pattern bias
     for (const p of ALL_PATTERNS) {
       const bias = this.patternBias[p];
       if (typeof bias === 'number' && bias > 0) {
@@ -902,7 +1122,6 @@ export class MosquitoEngine {
         break;
       }
       case 'APPROACH_CAMERA': {
-        // Swoop toward foreground lens and the player's detected ears/face for thrilling spatial ear buzz!
         const targetPt = faceAnchor
           ? m.id.charCodeAt(m.id.length - 1) % 3 === 0
             ? faceAnchor.leftEar
@@ -916,7 +1135,6 @@ export class MosquitoEngine {
         break;
       }
       case 'RETREAT_CAMERA': {
-        // Pull back toward rear layer
         m.vz += 0.34 * speedFactor * dt;
         m.vx += Math.sin(m.patternPhase * 3.8) * 0.45 * dt;
         m.vy += Math.cos(m.patternPhase * 3.2) * 0.4 * dt;
@@ -926,7 +1144,6 @@ export class MosquitoEngine {
   }
 
   private computeDepthScale(z: number): number {
-    // Perspective projection: z = 0.08 -> ~1.95x foreground giant; z = 1.0 -> ~0.58x distant rear
     const focal = 0.56;
     return focal / (focal + z - 0.28);
   }

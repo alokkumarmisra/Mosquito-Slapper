@@ -1,20 +1,57 @@
 import { ChangeEvent, useRef, useState } from 'react';
-import { Download, RefreshCw, Server, Trophy, Tv, Upload, User, Volume2, X } from 'lucide-react';
+import {
+  Download,
+  Eraser,
+  Flag,
+  Maximize2,
+  Minimize2,
+  Minus,
+  Pause,
+  Play,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Server,
+  ShieldAlert,
+  SwitchCamera,
+  Trophy,
+  Tv,
+  Upload,
+  User,
+  Volume2,
+  X,
+} from 'lucide-react';
 import { DEFAULT_BACKEND_CONFIG, DEFAULT_SETTINGS, RESOLUTION_MAP } from '../config/defaults';
 import { resolveCompanionWsUrl } from '../network/BackendApiClient';
 import {
   BackendApiConfig,
   BackendConnectionStatus,
+  BiteSimulationSettings,
   CameraDeviceOption,
   CameraResolutionPreset,
+  DeviceRole,
+  DifficultyLevel,
+  GamePhase,
   GameSettings,
 } from '../types/game';
 import { LlmConnectionStatus } from '../ai/LocalLlmService';
+import { PWAInstallButton } from './PWAInstallButton';
+
+const DIFFICULTY_OPTIONS: Array<{ value: DifficultyLevel; label: string }> = [
+  { value: DifficultyLevel.EASY, label: 'Easy' },
+  { value: DifficultyLevel.NORMAL, label: 'Normal' },
+  { value: DifficultyLevel.HARD, label: 'Hard' },
+  { value: DifficultyLevel.EXTREME, label: 'Extreme' },
+];
 
 interface SettingsDrawerProps {
   open: boolean;
+  phase: GamePhase;
   settings: GameSettings;
   cameras: CameraDeviceOption[];
+  livingCount: number;
+  deviceRole: DeviceRole;
+  isFullscreen: boolean;
   llmStatus: LlmConnectionStatus;
   llmModels: string[];
   llmStatusMessage: string;
@@ -23,7 +60,21 @@ interface SettingsDrawerProps {
   playerDisplayName: string;
   playerUsername?: string | null;
   isLoggedIn: boolean;
+  totalBites: number;
+  activeBiteMarks: number;
   onClose: () => void;
+  onStart: () => void;
+  onPauseToggle: () => void;
+  onRestart: () => void;
+  onReset: () => void;
+  onEndGame: () => void;
+  onAddMosquitoes: (count: number) => void;
+  onRemoveMosquitoes: (count: number) => void;
+  onDifficultyChange: (level: DifficultyLevel) => void;
+  onToggleAutoDifficulty: () => void;
+  onFlipCamera: () => void;
+  onToggleFullscreen: () => void;
+  onOpenBiteHistory: () => void;
   onOpenTvCast: () => void;
   onOpenDownloads: () => void;
   onOpenAccount: () => void;
@@ -33,13 +84,19 @@ interface SettingsDrawerProps {
   onTestLlm: () => Promise<void>;
   onTestKillSound: () => void;
   onTestMissSound: () => void;
+  onTestBiteSound: () => void;
+  onResetBiteMarks: () => void;
   onResetDefaults: () => void;
 }
 
 export function SettingsDrawer({
   open,
+  phase,
   settings,
   cameras,
+  livingCount,
+  deviceRole,
+  isFullscreen,
   llmStatus,
   llmModels,
   llmStatusMessage,
@@ -48,7 +105,21 @@ export function SettingsDrawer({
   playerDisplayName,
   playerUsername,
   isLoggedIn,
+  totalBites,
+  activeBiteMarks,
   onClose,
+  onStart,
+  onPauseToggle,
+  onRestart,
+  onReset,
+  onEndGame,
+  onAddMosquitoes,
+  onRemoveMosquitoes,
+  onDifficultyChange,
+  onToggleAutoDifficulty,
+  onFlipCamera,
+  onToggleFullscreen,
+  onOpenBiteHistory,
   onOpenTvCast,
   onOpenDownloads,
   onOpenAccount,
@@ -58,14 +129,24 @@ export function SettingsDrawer({
   onTestLlm,
   onTestKillSound,
   onTestMissSound,
+  onTestBiteSound,
+  onResetBiteMarks,
   onResetDefaults,
 }: SettingsDrawerProps) {
   const [testingLlm, setTestingLlm] = useState(false);
   const [testingBackend, setTestingBackend] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
+  const [customMosquitoCount, setCustomMosquitoCount] = useState('15');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   if (!open) return null;
+
+  const handleAddCustomMosquitoes = () => {
+    const parsed = parseInt(customMosquitoCount, 10);
+    if (!Number.isNaN(parsed) && parsed > 0) {
+      onAddMosquitoes(Math.min(100, parsed));
+    }
+  };
 
   const patch = (partial: Partial<GameSettings>) => {
     onChange({ ...settings, ...partial });
@@ -92,6 +173,24 @@ export function SettingsDrawer({
     onChange({
       ...settings,
       backend: { ...settings.backend, ...partial },
+    });
+  };
+
+  const patchBites = (partial: Partial<BiteSimulationSettings>) => {
+    const nextBites: BiteSimulationSettings = {
+      ...settings.bites,
+      ...partial,
+    };
+    if (nextBites.maxBitingDurationSec < nextBites.minBitingDurationSec) {
+      if (partial.minBitingDurationSec !== undefined) {
+        nextBites.maxBitingDurationSec = nextBites.minBitingDurationSec;
+      } else {
+        nextBites.minBitingDurationSec = nextBites.maxBitingDurationSec;
+      }
+    }
+    onChange({
+      ...settings,
+      bites: nextBites,
     });
   };
 
@@ -138,6 +237,7 @@ export function SettingsDrawer({
           llm: { ...settings.llm, ...(parsed.llm ?? {}) },
           backend: { ...settings.backend, ...(parsed.backend ?? {}) },
           downloads: { ...settings.downloads, ...(parsed.downloads ?? {}) },
+          bites: { ...settings.bites, ...(parsed.bites ?? {}) },
         });
         setImportError(null);
       } catch {
@@ -181,6 +281,232 @@ export function SettingsDrawer({
 
         {/* Scrollable Settings Sections */}
         <div className="safe-bottom flex-1 space-y-6 overflow-y-auto px-4 py-4 sm:px-5 sm:py-5">
+          {/* Quick Game & Session Controls */}
+          <section className="space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <h3 className="text-sm font-bold text-[#C8F542]">Game Controls</h3>
+              <span className="font-mono text-[11px] text-slate-400 tabular-nums">
+                {livingCount} active
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              {phase === GamePhase.CALIBRATION || phase === GamePhase.GAME_OVER ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onStart();
+                    onClose();
+                  }}
+                  className="col-span-2 inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#C8F542] px-4 text-xs font-extrabold text-[#0E1310] transition-colors hover:bg-[#d7fb6a] whitespace-nowrap cursor-pointer"
+                >
+                  <Play className="h-4 w-4 shrink-0 fill-current" />
+                  Start Game
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onPauseToggle();
+                    onClose();
+                  }}
+                  className="col-span-2 inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#C8F542] px-4 text-xs font-extrabold text-[#0E1310] transition-colors hover:bg-[#d7fb6a] whitespace-nowrap cursor-pointer"
+                >
+                  {phase === GamePhase.PAUSED ? (
+                    <>
+                      <Play className="h-4 w-4 shrink-0 fill-current" />
+                      Resume Game
+                    </>
+                  ) : (
+                    <>
+                      <Pause className="h-4 w-4 shrink-0" />
+                      Pause Game
+                    </>
+                  )}
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => {
+                  onRestart();
+                  onClose();
+                }}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-[#1B231E] px-3 text-xs font-semibold text-[#F4F7F2] hover:bg-[#253029] whitespace-nowrap cursor-pointer"
+              >
+                <RotateCcw className="h-3.5 w-3.5 shrink-0" />
+                Restart
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onReset();
+                  onClose();
+                }}
+                className="inline-flex min-h-[44px] items-center justify-center rounded-lg border border-white/12 bg-[#1B231E] px-3 text-xs font-semibold text-slate-200 hover:bg-[#253029] whitespace-nowrap cursor-pointer"
+              >
+                Reset
+              </button>
+
+              {(phase === GamePhase.PLAYING || phase === GamePhase.PAUSED) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onEndGame();
+                    onClose();
+                  }}
+                  className="col-span-2 inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-[#FF6B35]/35 bg-[#FF6B35]/15 px-3 text-xs font-semibold text-[#FF8A5C] hover:bg-[#FF6B35]/25 whitespace-nowrap cursor-pointer"
+                >
+                  <Flag className="h-3.5 w-3.5 shrink-0" />
+                  End Game
+                </button>
+              )}
+            </div>
+
+            {/* Quick Camera Flip, Bite History & Fullscreen shortcuts */}
+            <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
+              {deviceRole === 'STANDALONE' && (
+                <button
+                  type="button"
+                  onClick={onFlipCamera}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-[#1A221D] px-3 text-xs font-semibold text-[#F4F7F2] hover:bg-[#242F28] whitespace-nowrap cursor-pointer"
+                >
+                  <SwitchCamera className="h-4 w-4 shrink-0 text-[#C8F542]" />
+                  {settings.cameraFacing === 'user' ? 'Switch to Rear' : 'Switch to Front'}
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => {
+                  onClose();
+                  onOpenBiteHistory();
+                }}
+                className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border px-3 text-xs font-semibold whitespace-nowrap cursor-pointer ${
+                  activeBiteMarks > 0
+                    ? 'border-[#FB7185]/45 bg-[#2A171C] text-[#FDA4AF] hover:bg-[#381E24]'
+                    : 'border-white/12 bg-[#1A221D] text-[#F4F7F2] hover:bg-[#242F28]'
+                }`}
+              >
+                <ShieldAlert className="h-4 w-4 shrink-0 text-[#FB7185]" />
+                Bite History ({totalBites})
+              </button>
+              <button
+                type="button"
+                onClick={onToggleFullscreen}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-[#1A221D] px-3 text-xs font-semibold text-slate-200 hover:bg-[#242F28] whitespace-nowrap cursor-pointer"
+              >
+                {isFullscreen ? (
+                  <>
+                    <Minimize2 className="h-4 w-4 shrink-0" />
+                    Exit Fullscreen
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="h-4 w-4 shrink-0" />
+                    Fullscreen
+                  </>
+                )}
+              </button>
+              <PWAInstallButton className="w-full" />
+            </div>
+
+            {/* Difficulty & Auto Scaling */}
+            <div className="space-y-1.5">
+              <span className="block text-xs font-medium text-slate-300">Difficulty</span>
+              <div className="grid grid-cols-3 gap-1.5 min-[380px]:grid-cols-5">
+                {DIFFICULTY_OPTIONS.map((d) => (
+                  <button
+                    key={d.value}
+                    type="button"
+                    onClick={() => onDifficultyChange(d.value)}
+                    className={`min-h-[40px] rounded-lg px-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
+                      settings.difficulty === d.value
+                        ? 'bg-[#28352D] text-[#C8F542]'
+                        : 'border border-white/10 bg-[#18201B] text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    {d.label}
+                  </button>
+                ))}
+                <button
+                  type="button"
+                  onClick={onToggleAutoDifficulty}
+                  className={`min-h-[40px] rounded-lg px-1.5 text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
+                    settings.autoDifficulty
+                      ? 'bg-[#FF6B35] text-[#0E1310]'
+                      : 'border border-white/10 bg-[#18201B] text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Auto
+                </button>
+              </div>
+            </div>
+
+            {/* Add / Remove Mosquitoes */}
+            <div className="space-y-2">
+              <span className="block text-xs font-medium text-slate-300">
+                Add or Remove Mosquitoes
+              </span>
+              <div className="grid grid-cols-4 gap-1.5">
+                {[1, 5, 10, 20].map((amt) => (
+                  <button
+                    key={amt}
+                    type="button"
+                    onClick={() => onAddMosquitoes(amt)}
+                    className="inline-flex min-h-[40px] items-center justify-center gap-0.5 rounded-lg border border-white/12 bg-[#1B2520] font-mono text-xs font-bold text-[#C8F542] hover:border-[#C8F542]/45 tabular-nums cursor-pointer"
+                  >
+                    <Plus className="h-3.5 w-3.5" />
+                    {amt}
+                  </button>
+                ))}
+              </div>
+              <div className="grid grid-cols-3 gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => onRemoveMosquitoes(1)}
+                  disabled={livingCount <= 0}
+                  className="inline-flex min-h-[40px] items-center justify-center gap-1 rounded-lg border border-white/10 bg-[#1B231E] font-mono text-xs font-semibold text-slate-300 hover:text-[#FB7185] disabled:opacity-40 tabular-nums cursor-pointer"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                  1
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemoveMosquitoes(5)}
+                  disabled={livingCount <= 0}
+                  className="inline-flex min-h-[40px] items-center justify-center gap-1 rounded-lg border border-white/10 bg-[#1B231E] font-mono text-xs font-semibold text-slate-300 hover:text-[#FB7185] disabled:opacity-40 tabular-nums cursor-pointer"
+                >
+                  <Minus className="h-3.5 w-3.5" />
+                  5
+                </button>
+                <div className="flex items-center gap-1">
+                  <input
+                    type="number"
+                    min={1}
+                    max={100}
+                    value={customMosquitoCount}
+                    onChange={(e) => setCustomMosquitoCount(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') handleAddCustomMosquitoes();
+                    }}
+                    aria-label="Custom mosquito count"
+                    className="h-10 w-full min-w-0 rounded-lg border border-white/15 bg-[#0E1310] px-2 text-center font-mono text-xs text-[#F4F7F2] tabular-nums outline-none focus:border-[#C8F542]"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCustomMosquitoes}
+                    className="h-10 shrink-0 rounded-lg bg-[#C8F542] px-2.5 text-xs font-extrabold text-[#0E1310] hover:bg-[#d7fb6a] cursor-pointer"
+                  >
+                    Add
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <hr className="border-white/10" />
+
           {/* 0. Player Profile & Optional Login */}
           <section className="space-y-3">
             <div className="flex items-center justify-between gap-2">
@@ -492,6 +818,138 @@ export function SettingsDrawer({
                 value={settings.rewards.tenComboBonus}
                 onChange={(v) => patchRewards('tenComboBonus', v)}
               />
+            </div>
+          </section>
+
+          <hr className="border-white/10" />
+
+          {/* 3.5. Body Bite Simulation */}
+          <section className="space-y-3.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5">
+                <ShieldAlert className="h-4 w-4 text-[#FB7185]" />
+                <h3 className="text-sm font-bold text-[#C8F542]">Body Bite Simulation</h3>
+              </div>
+              <span className="font-mono text-[11px] text-slate-400">Local Tracking</span>
+            </div>
+
+            <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
+              <ToggleRow
+                label="Enable Body Bites"
+                checked={settings.bites.enabled}
+                onToggle={() => patchBites({ enabled: !settings.bites.enabled })}
+              />
+              <ToggleRow
+                label="Face Bites"
+                checked={settings.bites.enableFaceBites}
+                onToggle={() => patchBites({ enableFaceBites: !settings.bites.enableFaceBites })}
+              />
+              <ToggleRow
+                label="Arm Bites"
+                checked={settings.bites.enableArmBites}
+                onToggle={() => patchBites({ enableArmBites: !settings.bites.enableArmBites })}
+              />
+              <ToggleRow
+                label="Neck Bites"
+                checked={settings.bites.enableNeckBites}
+                onToggle={() => patchBites({ enableNeckBites: !settings.bites.enableNeckBites })}
+              />
+              <ToggleRow
+                label="Hand Bites"
+                checked={settings.bites.enableHandBites}
+                onToggle={() => patchBites({ enableHandBites: !settings.bites.enableHandBites })}
+              />
+              <ToggleRow
+                label="Leg Bites"
+                checked={settings.bites.enableLegBites}
+                onToggle={() => patchBites({ enableLegBites: !settings.bites.enableLegBites })}
+              />
+            </div>
+
+            <SliderField
+              label="Mosquito Landing Probability"
+              value={settings.bites.landingProbability}
+              min={0.05}
+              max={1.0}
+              step={0.05}
+              display={`${Math.round(settings.bites.landingProbability * 100)}%`}
+              onChange={(v) => patchBites({ landingProbability: v })}
+            />
+
+            <SliderField
+              label="Min Biting Duration"
+              value={settings.bites.minBitingDurationSec}
+              min={1.0}
+              max={6.0}
+              step={0.2}
+              display={`${settings.bites.minBitingDurationSec.toFixed(1)}s`}
+              onChange={(v) => patchBites({ minBitingDurationSec: v })}
+            />
+
+            <SliderField
+              label="Max Biting Duration"
+              value={settings.bites.maxBitingDurationSec}
+              min={1.5}
+              max={8.0}
+              step={0.2}
+              display={`${settings.bites.maxBitingDurationSec.toFixed(1)}s`}
+              onChange={(v) => patchBites({ maxBitingDurationSec: v })}
+            />
+
+            <SliderField
+              label="Bite Mark Size"
+              value={settings.bites.biteMarkSize}
+              min={0.5}
+              max={2.0}
+              step={0.05}
+              display={`${settings.bites.biteMarkSize.toFixed(2)}x`}
+              onChange={(v) => patchBites({ biteMarkSize: v })}
+            />
+
+            <SliderField
+              label="Bite Visibility Duration"
+              value={settings.bites.biteVisibilityDurationSec}
+              min={5}
+              max={60}
+              step={1}
+              display={`${Math.round(settings.bites.biteVisibilityDurationSec)}s`}
+              onChange={(v) => patchBites({ biteVisibilityDurationSec: Math.round(v) })}
+            />
+
+            <SliderField
+              label="Bite Sound Volume"
+              value={settings.bites.biteSoundVolume}
+              min={0}
+              max={1}
+              step={0.05}
+              display={`${Math.round(settings.bites.biteSoundVolume * 100)}%`}
+              onChange={(v) => patchBites({ biteSoundVolume: v })}
+            />
+
+            <NumberField
+              label="Biting Mosquito Kill Bonus (pts)"
+              value={settings.bites.bitingKillBonus}
+              onChange={(v) => patchBites({ bitingKillBonus: Math.max(0, Math.round(v)) })}
+            />
+
+            <div className="flex flex-wrap items-center gap-2 pt-1">
+              <button
+                type="button"
+                onClick={onTestBiteSound}
+                className="inline-flex h-10 items-center gap-1.5 rounded-md border border-white/12 bg-[#1B231E] px-3 text-xs font-medium text-[#FDA4AF] hover:bg-[#253029] whitespace-nowrap cursor-pointer"
+              >
+                <Volume2 className="h-3.5 w-3.5 shrink-0" />
+                Test Bite Sound
+              </button>
+              <button
+                type="button"
+                onClick={onResetBiteMarks}
+                disabled={activeBiteMarks === 0}
+                className="inline-flex h-10 items-center gap-1.5 rounded-md border border-[#FB7185]/35 bg-[#2A171C] px-3 text-xs font-semibold text-[#FDA4AF] hover:bg-[#381E24] disabled:opacity-45 whitespace-nowrap cursor-pointer"
+              >
+                <Eraser className="h-3.5 w-3.5 shrink-0" />
+                Reset Bite Marks ({activeBiteMarks})
+              </button>
             </div>
           </section>
 

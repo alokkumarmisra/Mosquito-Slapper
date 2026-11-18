@@ -1,8 +1,9 @@
 import { Award, Home, RotateCcw, Trophy, User } from 'lucide-react';
-import { AchievementBadge, GameStats } from '../types/game';
+import { AchievementBadge, BiteStatistics, GameStats } from '../types/game';
 
 interface GameOverModalProps {
   stats: GameStats;
+  biteStats?: BiteStatistics;
   achievements: AchievementBadge[];
   aiDebrief: string;
   swarmCleared: boolean;
@@ -24,6 +25,7 @@ function formatDuration(seconds: number): string {
 
 export function GameOverModal({
   stats,
+  biteStats,
   achievements,
   aiDebrief,
   swarmCleared,
@@ -108,6 +110,25 @@ export function GameOverModal({
             <StatCell label="Accuracy" value={`${Math.round(stats.accuracy)}%`} />
             <StatCell label="Highest Combo" value={`${stats.highestCombo}x`} accent="text-[#FF6B35]" />
             <StatCell label="Playing Time" value={formatDuration(stats.elapsedSeconds)} />
+            {biteStats && (
+              <>
+                <StatCell
+                  label="Total Bites"
+                  value={String(biteStats.totalBites)}
+                  sub={
+                    biteStats.mostBittenRegion
+                      ? `Top: ${biteStats.mostBittenRegionLabel}`
+                      : undefined
+                  }
+                  accent={biteStats.totalBites > 0 ? 'text-[#FB7185]' : undefined}
+                />
+                <StatCell
+                  label="Mid-Bite Kills"
+                  value={String(biteStats.bitingKills)}
+                  accent={biteStats.bitingKills > 0 ? 'text-[#C8F542]' : undefined}
+                />
+              </>
+            )}
           </div>
 
           {/* Achievement Badges */}
@@ -193,10 +214,12 @@ export function GameOverModal({
 function StatCell({
   label,
   value,
+  sub,
   accent = 'text-[#F4F7F2]',
 }: {
   label: string;
   value: string;
+  sub?: string;
   accent?: string;
 }) {
   return (
@@ -205,6 +228,7 @@ function StatCell({
       <div className={`mt-0.5 font-mono text-lg font-bold tabular-nums sm:text-xl ${accent}`}>
         {value}
       </div>
+      {sub && <div className="mt-0.5 truncate text-[11px] text-slate-400">{sub}</div>}
     </div>
   );
 }

@@ -89,6 +89,7 @@ export function createDefaultFaceAnchor(): FaceAnchor {
     leftEar: { x: 0.36, y: 0.44 },
     rightEar: { x: 0.64, y: 0.44 },
     earRadius: 0.1,
+    chin: { x: 0.5, y: 0.59 },
     zones: buildZonesRecord(
       { x: 0.5, y: 0.24 },
       { x: 0.5, y: 0.34 },
@@ -431,6 +432,7 @@ export class FaceTracker {
       leftEar,
       rightEar,
       earRadius,
+      chin: chinBottom,
       head: headCrown,
       forehead,
       nose,
@@ -528,6 +530,11 @@ export class FaceTracker {
       y: clamp01(nose.y * 0.55 + mouth.y * 0.25 + rightEye.y * 0.2),
     };
 
+    const chinPt: Point2D = {
+      x: clamp01(mouth.x - upX * faceH * 0.22),
+      y: clamp01(mouth.y - upY * faceH * 0.22),
+    };
+
     return this.commitSmoothedAnchor({
       faceCenter,
       faceRadius,
@@ -535,6 +542,7 @@ export class FaceTracker {
       leftEar,
       rightEar,
       earRadius,
+      chin: chinPt,
       head: headCrown,
       forehead,
       nose,
@@ -553,6 +561,7 @@ export class FaceTracker {
     leftEar: Point2D;
     rightEar: Point2D;
     earRadius: number;
+    chin: Point2D;
     head: Point2D;
     forehead: Point2D;
     nose: Point2D;
@@ -584,6 +593,7 @@ export class FaceTracker {
       );
     }
 
+    const prevChin = prev.chin ?? next.chin;
     this.anchor = {
       faceCenter: lerpPoint(prev.faceCenter, next.faceCenter, alpha),
       faceRadius: smoothedRadius,
@@ -591,6 +601,7 @@ export class FaceTracker {
       leftEar: lerpPoint(prev.leftEar, next.leftEar, alpha),
       rightEar: lerpPoint(prev.rightEar, next.rightEar, alpha),
       earRadius: prev.earRadius * (1 - alpha) + next.earRadius * alpha,
+      chin: lerpPoint(prevChin, next.chin, alpha),
       zones: buildZonesRecord(
         headPt,
         foreheadPt,
