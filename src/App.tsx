@@ -5,6 +5,7 @@
 
 import { PointerEvent, useCallback, useEffect, useRef, useState } from 'react';
 import type { User as FirebaseUser } from 'firebase/auth';
+import { Analytics } from '@vercel/analytics/react';
 import { LocalLlmService, LlmConnectionStatus } from './ai/LocalLlmService';
 import { SoundManager } from './audio/SoundManager';
 import {
@@ -2194,6 +2195,9 @@ export default function App() {
         onImportGuestToAccount={handleImportGuestToAccount}
         onClearGuestHistory={handleClearGuestHistory}
       />
+
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </>
   );
 }
