@@ -1,0 +1,6 @@
+{
+  "name": "AI Mosquito Slapper",
+  "description": "Real-time webcam AR arcade game with MediaPipe hand tracking, clap and slap gesture detection, 3D depth mosquito flight, procedural audio, and local LM Studio AI commentary.",
+  "requestFramePermissions": ["camera"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

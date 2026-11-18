@@ -1,0 +1,327 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 0: Global Default-Deny Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // === Global Hardened Primitives ===
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isOwner(userId) {
+      return isVerifiedUser() && request.auth.uid == userId;
+    }
+
+    function isValidDifficulty(val) {
+      return val is string && val.size() >= 4 && val.size() <= 7 && val in ['EASY', 'NORMAL', 'HARD', 'EXTREME'];
+    }
+
+    function isValidAchievementsList(items) {
+      return items is list
+        && items.size() <= 12
+        && (items.size() == 0
+          || (items[0] is string
+            && items[0].size() >= 1
+            && items[0].size() <= 48
+            && items[items.size() - 1] is string
+            && items[items.size() - 1].size() >= 1
+            && items[items.size() - 1].size() <= 48));
+    }
+
+    // === Validation Blueprints (Anti-Update-Gap) ===
+    function isValidPlayerProfile(data) {
+      return isVerifiedUser()
+        && data.keys().hasAll([
+          'uid',
+          'displayName',
+          'photoURL',
+          'gamesPlayed',
+          'bestScore',
+          'totalKills',
+          'totalScore',
+          'highestCombo',
+          'bestAccuracy',
+          'swarmsCleared',
+          'unlockedAchievements',
+          'createdAt',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'displayName',
+          'photoURL',
+          'gamesPlayed',
+          'bestScore',
+          'totalKills',
+          'totalScore',
+          'highestCombo',
+          'bestAccuracy',
+          'swarmsCleared',
+          'unlockedAchievements',
+          'createdAt',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.displayName is string
+        && data.displayName.size() >= 1
+        && data.displayName.size() <= 32
+        && data.photoURL is string
+        && data.photoURL.size() <= 512
+        && data.gamesPlayed is int && data.gamesPlayed >= 0 && data.gamesPlayed <= 1000000
+        && data.bestScore is int && data.bestScore >= 0 && data.bestScore <= 10000000
+        && data.totalKills is int && data.totalKills >= 0 && data.totalKills <= 10000000
+        && data.totalScore is int && data.totalScore >= 0 && data.totalScore <= 100000000
+        && data.highestCombo is int && data.highestCombo >= 0 && data.highestCombo <= 10000
+        && data.bestAccuracy is number && data.bestAccuracy >= 0 && data.bestAccuracy <= 100
+        && data.swarmsCleared is int && data.swarmsCleared >= 0 && data.swarmsCleared <= 1000000
+        && isValidAchievementsList(data.unlockedAchievements)
+        && data.createdAt is timestamp
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidPlayerPreferences(data) {
+      return isVerifiedUser()
+        && data.keys().hasAll([
+          'uid',
+          'difficulty',
+          'autoDifficulty',
+          'initialMosquitoCount',
+          'mosquitoSpeedMultiplier',
+          'sfxVolume',
+          'buzzVolume',
+          'muted',
+          'enableMissVoice',
+          'showLandmarks',
+          'showHandPointer',
+          'showFaceZones',
+          'enableFaceLanding',
+          'mirrorCamera',
+          'practiceMode',
+          'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'difficulty',
+          'autoDifficulty',
+          'initialMosquitoCount',
+          'mosquitoSpeedMultiplier',
+          'sfxVolume',
+          'buzzVolume',
+          'muted',
+          'enableMissVoice',
+          'showLandmarks',
+          'showHandPointer',
+          'showFaceZones',
+          'enableFaceLanding',
+          'mirrorCamera',
+          'practiceMode',
+          'updatedAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && isValidDifficulty(data.difficulty)
+        && data.autoDifficulty is bool
+        && data.initialMosquitoCount is int && data.initialMosquitoCount >= 1 && data.initialMosquitoCount <= 50
+        && data.mosquitoSpeedMultiplier is number && data.mosquitoSpeedMultiplier >= 0.5 && data.mosquitoSpeedMultiplier <= 2.0
+        && data.sfxVolume is number && data.sfxVolume >= 0 && data.sfxVolume <= 1
+        && data.buzzVolume is number && data.buzzVolume >= 0 && data.buzzVolume <= 1
+        && data.muted is bool
+        && data.enableMissVoice is bool
+        && data.showLandmarks is bool
+        && data.showHandPointer is bool
+        && data.showFaceZones is bool
+        && data.enableFaceLanding is bool
+        && data.mirrorCamera is bool
+        && data.practiceMode is bool
+        && data.updatedAt is timestamp;
+    }
+
+    function isValidLeaderboardScore(data) {
+      return isVerifiedUser()
+        && data.keys().hasAll([
+          'uid',
+          'playerName',
+          'score',
+          'mosquitoesKilled',
+          'accuracy',
+          'highestCombo',
+          'difficulty',
+          'swarmCleared',
+          'elapsedSeconds',
+          'visibility',
+          'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'uid',
+          'playerName',
+          'score',
+          'mosquitoesKilled',
+          'accuracy',
+          'highestCombo',
+          'difficulty',
+          'swarmCleared',
+          'elapsedSeconds',
+          'visibility',
+          'createdAt'
+        ])
+        && isValidId(data.uid)
+        && data.uid == request.auth.uid
+        && data.playerName is string
+        && data.playerName.size() >= 1
+        && data.playerName.size() <= 32
+        && data.score is int && data.score >= 0 && data.score <= 10000000
+        && data.mosquitoesKilled is int && data.mosquitoesKilled >= 0 && data.mosquitoesKilled <= 10000
+        && data.accuracy is number && data.accuracy >= 0 && data.accuracy <= 100
+        && data.highestCombo is int && data.highestCombo >= 0 && data.highestCombo <= 10000
+        && isValidDifficulty(data.difficulty)
+        && data.swarmCleared is bool
+        && data.elapsedSeconds is number && data.elapsedSeconds >= 0 && data.elapsedSeconds <= 86400
+        && data.visibility is string
+        && data.visibility.size() == 6
+        && data.visibility == 'public'
+        && data.createdAt is timestamp;
+    }
+
+    // === Collection: /users/{userId} (Owner-Isolated Progression Profile — Zero PII) ===
+    match /users/{userId} {
+      allow get: if isOwner(userId) && isValidId(userId);
+      allow list: if false;
+
+      allow create: if isOwner(userId)
+        && isValidId(userId)
+        && isValidPlayerProfile(incoming())
+        && incoming().uid == userId
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+
+      allow update: if isValidPlayerProfile(incoming())
+        && isOwner(userId)
+        && isValidId(userId)
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          // Action 1: Update Display Name / Avatar
+          incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'updatedAt'])
+          ||
+          // Action 2: Record Match Stats / Import Guest Progress
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'gamesPlayed',
+            'bestScore',
+            'totalKills',
+            'totalScore',
+            'highestCombo',
+            'bestAccuracy',
+            'swarmsCleared',
+            'unlockedAchievements',
+            'updatedAt'
+          ])
+          ||
+          // Action 3: Combined Profile & Guest Merge Sync
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'displayName',
+            'photoURL',
+            'gamesPlayed',
+            'bestScore',
+            'totalKills',
+            'totalScore',
+            'highestCombo',
+            'bestAccuracy',
+            'swarmsCleared',
+            'unlockedAchievements',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isOwner(userId) && isValidId(userId);
+
+      // === Subcollection: /users/{userId}/preferences/{prefId} (Master Gate + Atomicity Enforced) ===
+      match /preferences/{prefId} {
+        allow get: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(prefId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+        allow list: if false;
+
+        allow create: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(prefId)
+          && isValidPlayerPreferences(incoming())
+          && incoming().uid == userId
+          && incoming().updatedAt == request.time
+          && existsAfter(/databases/$(database)/documents/users/$(userId));
+
+        allow update: if isValidPlayerPreferences(incoming())
+          && isOwner(userId)
+          && isValidId(userId)
+          && isValidId(prefId)
+          && incoming().uid == existing().uid
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly([
+            'difficulty',
+            'autoDifficulty',
+            'initialMosquitoCount',
+            'mosquitoSpeedMultiplier',
+            'sfxVolume',
+            'buzzVolume',
+            'muted',
+            'enableMissVoice',
+            'showLandmarks',
+            'showHandPointer',
+            'showFaceZones',
+            'enableFaceLanding',
+            'mirrorCamera',
+            'practiceMode',
+            'updatedAt'
+          ])
+          && existsAfter(/databases/$(database)/documents/users/$(userId));
+
+        allow delete: if isOwner(userId)
+          && isValidId(userId)
+          && isValidId(prefId)
+          && exists(/databases/$(database)/documents/users/$(userId));
+      }
+    }
+
+    // === Collection: /leaderboard/{scoreId} (Publicly Readable by Guests & Members; Immutable Verified Writes) ===
+    match /leaderboard/{scoreId} {
+      allow get: if isValidId(scoreId) && existing().visibility == 'public';
+      allow list: if existing().visibility == 'public'
+        && request.query.limit is int
+        && request.query.limit <= 50;
+
+      allow create: if isVerifiedUser()
+        && isValidId(scoreId)
+        && isValidLeaderboardScore(incoming())
+        && incoming().createdAt == request.time
+        && existsAfter(/databases/$(database)/documents/users/$(request.auth.uid));
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser()
+        && isValidId(scoreId)
+        && existing().uid == request.auth.uid;
+    }
+  }
+}

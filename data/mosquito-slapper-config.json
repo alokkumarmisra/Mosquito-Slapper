@@ -1,0 +1,50 @@
+{
+  "cameraDeviceId": "",
+  "cameraFacing": "user",
+  "resolution": "1080p",
+  "mirrorCamera": true,
+  "showLandmarks": false,
+  "showHandPointer": false,
+  "showHitboxes": true,
+  "practiceMode": false,
+  "handTrackingSensitivity": 0.65,
+  "clapProximityThreshold": 0.145,
+  "clapClosingSpeedThreshold": 0.62,
+  "slapVelocityThreshold": 1.45,
+  "hitDetectionRadius": 68,
+  "attackCooldownMs": 340,
+  "initialMosquitoCount": 10,
+  "mosquitoSpeedMultiplier": 1,
+  "difficulty": "NORMAL",
+  "autoDifficulty": true,
+  "rewards": {
+    "normalKill": 10,
+    "doubleKillBonus": 25,
+    "tripleKillBonus": 50,
+    "fiveComboBonus": 50,
+    "tenComboBonus": 100
+  },
+  "sfxVolume": 0.8,
+  "buzzVolume": 0.35,
+  "muted": true,
+  "enableMissVoice": false,
+  "llm": {
+    "enabled": true,
+    "endpoint": "http://localhost:1234/v1",
+    "model": "local-model",
+    "apiKey": ""
+  },
+  "backend": {
+    "enabled": false,
+    "baseUrl": "",
+    "wsUrl": "",
+    "healthPath": "/api/health",
+    "configPath": "/api/config",
+    "scoresPath": "/api/scores",
+    "syncConfig": true,
+    "syncScores": true,
+    "routeLlmProxy": true,
+    "routeTvRelay": true,
+    "useServerProxy": false
+  }
+}

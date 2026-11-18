@@ -1,0 +1,266 @@
+{
+  "entities": {
+    "PlayerProfile": {
+      "title": "PlayerProfile",
+      "description": "Cloud-synced progression profile for an optionally signed-in AI Mosquito Slapper player. Contains no PII (no email, phone, or address).",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the player who owns this profile."
+        },
+        "displayName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "description": "Player chosen display name shown on HUD and leaderboard."
+        },
+        "photoURL": {
+          "type": "string",
+          "maxLength": 512,
+          "description": "Optional avatar URL from Google Sign-In or empty string."
+        },
+        "gamesPlayed": {
+          "type": "integer",
+          "description": "Cumulative completed matches (0..1000000)."
+        },
+        "bestScore": {
+          "type": "integer",
+          "description": "Highest single-match score (0..10000000)."
+        },
+        "totalKills": {
+          "type": "integer",
+          "description": "Cumulative mosquitoes eliminated (0..10000000)."
+        },
+        "totalScore": {
+          "type": "integer",
+          "description": "Cumulative lifetime score across matches (0..100000000)."
+        },
+        "highestCombo": {
+          "type": "integer",
+          "description": "Highest combo streak achieved (0..10000)."
+        },
+        "bestAccuracy": {
+          "type": "number",
+          "description": "Best single-match accuracy percentage (0..100)."
+        },
+        "swarmsCleared": {
+          "type": "integer",
+          "description": "Number of full swarms cleared (0..1000000)."
+        },
+        "unlockedAchievements": {
+          "type": "array",
+          "description": "Bounded list (max 12 items, each <= 48 chars) of unlocked achievement titles."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the player profile was first created."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the player profile was last updated."
+        }
+      },
+      "required": [
+        "uid",
+        "displayName",
+        "photoURL",
+        "gamesPlayed",
+        "bestScore",
+        "totalKills",
+        "totalScore",
+        "highestCombo",
+        "bestAccuracy",
+        "swarmsCleared",
+        "unlockedAchievements",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "PlayerPreferences": {
+      "title": "PlayerPreferences",
+      "description": "Cloud-synced gameplay, audio, and vision preferences owned by a signed-in player.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Owner Firebase Auth UID matching the parent user document."
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["EASY", "NORMAL", "HARD", "EXTREME"],
+          "description": "Preferred mosquito difficulty preset."
+        },
+        "autoDifficulty": {
+          "type": "boolean",
+          "description": "Whether dynamic performance-based difficulty scaling is enabled."
+        },
+        "initialMosquitoCount": {
+          "type": "integer",
+          "description": "Starting swarm size (1..50)."
+        },
+        "mosquitoSpeedMultiplier": {
+          "type": "number",
+          "description": "Swarm speed multiplier (0.5..2.0)."
+        },
+        "sfxVolume": {
+          "type": "number",
+          "description": "Sound effects volume (0..1)."
+        },
+        "buzzVolume": {
+          "type": "number",
+          "description": "Spatial mosquito buzz volume (0..1)."
+        },
+        "muted": {
+          "type": "boolean",
+          "description": "Master mute preference."
+        },
+        "enableMissVoice": {
+          "type": "boolean",
+          "description": "Enable spoken miss feedback."
+        },
+        "showLandmarks": {
+          "type": "boolean",
+          "description": "Render hand skeleton landmarks."
+        },
+        "showHandPointer": {
+          "type": "boolean",
+          "description": "Render palm pointer reticle."
+        },
+        "showFaceZones": {
+          "type": "boolean",
+          "description": "Render subtle AR face landing zone markers."
+        },
+        "enableFaceLanding": {
+          "type": "boolean",
+          "description": "Allow mosquitoes to periodically land on detected face zones."
+        },
+        "mirrorCamera": {
+          "type": "boolean",
+          "description": "Mirror webcam video horizontally."
+        },
+        "practiceMode": {
+          "type": "boolean",
+          "description": "Use mouse/touch pointer practice mode instead of webcam."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when preferences were last saved."
+        }
+      },
+      "required": [
+        "uid",
+        "difficulty",
+        "autoDifficulty",
+        "initialMosquitoCount",
+        "mosquitoSpeedMultiplier",
+        "sfxVolume",
+        "buzzVolume",
+        "muted",
+        "enableMissVoice",
+        "showLandmarks",
+        "showHandPointer",
+        "showFaceZones",
+        "enableFaceLanding",
+        "mirrorCamera",
+        "practiceMode",
+        "updatedAt"
+      ]
+    },
+    "LeaderboardScore": {
+      "title": "LeaderboardScore",
+      "description": "Immutable public match score posted by a verified signed-in player to the shared cloud leaderboard. Readable by both Guest and Signed-In players.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$",
+          "description": "Firebase Auth UID of the player who earned this score."
+        },
+        "playerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32,
+          "description": "Public display name attached to the score entry."
+        },
+        "score": {
+          "type": "integer",
+          "description": "Final match score (0..10000000)."
+        },
+        "mosquitoesKilled": {
+          "type": "integer",
+          "description": "Total mosquitoes killed during the match (0..10000)."
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Strike accuracy percentage (0..100)."
+        },
+        "highestCombo": {
+          "type": "integer",
+          "description": "Peak combo achieved during the match (0..10000)."
+        },
+        "difficulty": {
+          "type": "string",
+          "enum": ["EASY", "NORMAL", "HARD", "EXTREME"],
+          "description": "Difficulty level played."
+        },
+        "swarmCleared": {
+          "type": "boolean",
+          "description": "Whether all spawned mosquitoes were eliminated."
+        },
+        "elapsedSeconds": {
+          "type": "number",
+          "description": "Total match duration in seconds (0..86400)."
+        },
+        "visibility": {
+          "type": "string",
+          "enum": ["public"],
+          "description": "Explicit visibility flag enforcing public leaderboard queries."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the match score was recorded."
+        }
+      },
+      "required": [
+        "uid",
+        "playerName",
+        "score",
+        "mosquitoesKilled",
+        "accuracy",
+        "highestCombo",
+        "difficulty",
+        "swarmCleared",
+        "elapsedSeconds",
+        "visibility",
+        "createdAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/PlayerProfile" },
+      "description": "Owner-isolated player progression profile document keyed by Firebase Auth UID."
+    },
+    "/users/{userId}/preferences/{prefId}": {
+      "schema": { "$ref": "#/entities/PlayerPreferences" },
+      "description": "Owner-isolated gameplay, audio, and vision settings document nested under the player's profile."
+    },
+    "/leaderboard/{scoreId}": {
+      "schema": { "$ref": "#/entities/LeaderboardScore" },
+      "description": "Publicly viewable global cloud leaderboard of verified signed-in player match scores."
+    }
+  }
+}
