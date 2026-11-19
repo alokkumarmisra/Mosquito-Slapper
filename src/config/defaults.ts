@@ -234,29 +234,34 @@ export async function loadServerConfig(
   }
 }
 
-export function mergeSettings(base: GameSettings, partial: Partial<GameSettings>): GameSettings {
-  return {
-    ...base,
-    ...partial,
-    rewards: {
-      ...base.rewards,
-      ...(partial.rewards ?? {}),
-    },
-    llm: {
-      ...base.llm,
-      ...(partial.llm ?? {}),
-    },
-    backend: {
-      ...base.backend,
-      ...(partial.backend ?? {}),
-    },
-    downloads: {
-      ...base.downloads,
-      ...(partial.downloads ?? {}),
-    },
-    bites: {
-      ...base.bites,
-      ...(partial.bites ?? {}),
-    },
-  };
+function safeMerge<T extends Record<string, any>>(base: T, partial?: Partial<T> | null): T {
+  if (!partial || typeof partial !== 'object') return { ...base };
+  const result = { ...base };
+  for (const key of Object.keys(base) as Array<keyof T>) {
+    const val = partial[key];
+    if (val !== undefined && val !== null && !Number.isNaN(val)) {
+      result[key] = val;
+    }
+  }
+  return result;
+}
+
+export function mergeSettings(base: GameSettings, partial?: Partial<GameSettings> | null): GameSettings {
+  if (!partial || typeof partial !== 'object') return structuredClone(base);
+  const result: GameSettings = { ...base };
+  for (const key of Object.keys(base) as Array<keyof GameSettings>) {
+    if (key === 'rewards' || key === 'llm' || key === 'backend' || key === 'downloads' || key === 'bites') {
+      continue;
+    }
+    const val = (partial as any)[key];
+    if (val !== undefined && val !== null && !Number.isNaN(val)) {
+      (result as any)[key] = val;
+    }
+  }
+  result.rewards = safeMerge(base.rewards, partial.rewards);
+  result.llm = safeMerge(base.llm, partial.llm);
+  result.backend = safeMerge(base.backend, partial.backend);
+  result.downloads = safeMerge(base.downloads, partial.downloads);
+  result.bites = safeMerge(base.bites, partial.bites);
+  return result;
 }

@@ -5,6 +5,7 @@
 
 import { PointerEvent, useCallback, useEffect, useRef, useState } from 'react';
 import type { User as FirebaseUser } from 'firebase/auth';
+import { Settings as SettingsIcon } from 'lucide-react';
 import { LocalLlmService, LlmConnectionStatus } from './ai/LocalLlmService';
 import { SoundManager } from './audio/SoundManager';
 import {
@@ -1405,6 +1406,34 @@ export default function App() {
     }
   }, []);
 
+  const wasPausedBySettingsRef = useRef(false);
+
+  const handleOpenSettings = useCallback(() => {
+    if (phaseRef.current === GamePhase.PLAYING) {
+      wasPausedBySettingsRef.current = true;
+      handlePauseToggle();
+    }
+    setSettingsOpen(true);
+  }, [handlePauseToggle]);
+
+  const handleCloseSettings = useCallback(() => {
+    setSettingsOpen(false);
+    if (wasPausedBySettingsRef.current) {
+      wasPausedBySettingsRef.current = false;
+      if (phaseRef.current === GamePhase.PAUSED) {
+        handlePauseToggle();
+      }
+    }
+  }, [handlePauseToggle]);
+
+  const handleToggleSettings = useCallback(() => {
+    if (settingsOpen) {
+      handleCloseSettings();
+    } else {
+      handleOpenSettings();
+    }
+  }, [settingsOpen, handleCloseSettings, handleOpenSettings]);
+
   const handleAddMosquitoes = useCallback((count: number) => {
     if (swarmClearTimerRef.current !== null) {
       window.clearTimeout(swarmClearTimerRef.current);
@@ -1565,7 +1594,7 @@ export default function App() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        setSettingsOpen(false);
+        handleCloseSettings();
         setBiteHistoryOpen(false);
         setTvModalOpen(false);
         setDownloadsOpen(false);
@@ -1595,7 +1624,7 @@ export default function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [handlePauseToggle, startNewGame, handleToggleFullscreen]);
+  }, [handleCloseSettings, handlePauseToggle, startNewGame, handleToggleFullscreen]);
 
   // Spawn preview mosquitoes during calibration so the screen immediately feels alive
   useEffect(() => {
@@ -2226,7 +2255,9 @@ export default function App() {
             onResetBiteMarks={handleResetBiteMarks}
             onOpenTvCast={() => setTvModalOpen(true)}
             onOpenAccount={() => openAccountModal('profile')}
-            onOpenSettings={() => setSettingsOpen(true)}
+            isSettingsOpen={settingsOpen}
+            onOpenSettings={handleOpenSettings}
+            onToggleSettings={handleToggleSettings}
           />
 
           {/* Calibration / Start Overlay */}
@@ -2269,7 +2300,7 @@ export default function App() {
                 setDownloadPlatformFocus(null);
                 setDownloadsOpen(true);
               }}
-              onOpenSettings={() => setSettingsOpen(true)}
+              onOpenSettings={handleOpenSettings}
               onOpenAccount={() => openAccountModal('profile')}
               onOpenLeaderboard={() => openAccountModal('leaderboard')}
             />
@@ -2293,6 +2324,14 @@ export default function App() {
                     className="h-11 rounded-lg bg-[#C8F542] px-5 text-sm font-extrabold text-[#0E1310] hover:bg-[#d7fb6a] whitespace-nowrap cursor-pointer"
                   >
                     Resume
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleOpenSettings}
+                    className="inline-flex h-11 items-center gap-1.5 rounded-lg border border-white/15 bg-[#1B231E] px-4 text-sm font-medium text-[#F4F7F2] hover:bg-[#26322B] whitespace-nowrap cursor-pointer"
+                  >
+                    <SettingsIcon className="h-4 w-4 shrink-0" />
+                    Settings
                   </button>
                   <button
                     type="button"
@@ -2355,7 +2394,7 @@ export default function App() {
             isLoggedIn={isLoggedIn}
             totalBites={biteStats.totalBites}
             activeBiteMarks={biteStats.activeBiteMarks}
-            onClose={() => setSettingsOpen(false)}
+            onClose={handleCloseSettings}
             onStart={startNewGame}
             onPauseToggle={handlePauseToggle}
             onRestart={startNewGame}

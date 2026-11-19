@@ -1,4 +1,4 @@
-import { ChangeEvent, useRef, useState } from 'react';
+import { ChangeEvent, useEffect, useRef, useState } from 'react';
 import {
   Download,
   Eraser,
@@ -21,7 +21,13 @@ import {
   Volume2,
   X,
 } from 'lucide-react';
-import { DEFAULT_BACKEND_CONFIG, DEFAULT_SETTINGS, RESOLUTION_MAP } from '../config/defaults';
+import {
+  DEFAULT_BACKEND_CONFIG,
+  DEFAULT_BITE_SETTINGS,
+  DEFAULT_SETTINGS,
+  RESOLUTION_MAP,
+  mergeSettings,
+} from '../config/defaults';
 import { resolveCompanionWsUrl } from '../network/BackendApiClient';
 import {
   BackendApiConfig,
@@ -133,11 +139,24 @@ export function SettingsDrawer({
   onResetBiteMarks,
   onResetDefaults,
 }: SettingsDrawerProps) {
+  const safeSettings = mergeSettings(DEFAULT_SETTINGS, settings);
   const [testingLlm, setTestingLlm] = useState(false);
   const [testingBackend, setTestingBackend] = useState(false);
   const [importError, setImportError] = useState<string | null>(null);
   const [customMosquitoCount, setCustomMosquitoCount] = useState('15');
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const backdropMouseDownRef = useRef(false);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [open, onClose]);
 
   if (!open) return null;
 
@@ -149,36 +168,39 @@ export function SettingsDrawer({
   };
 
   const patch = (partial: Partial<GameSettings>) => {
-    onChange({ ...settings, ...partial });
+    onChange(mergeSettings(safeSettings, partial));
   };
 
   const patchRewards = (key: keyof GameSettings['rewards'], value: number) => {
-    onChange({
-      ...settings,
-      rewards: {
-        ...settings.rewards,
-        [key]: Math.max(0, Math.round(value)),
-      },
-    });
+    onChange(
+      mergeSettings(safeSettings, {
+        rewards: {
+          ...safeSettings.rewards,
+          [key]: Math.max(0, Math.round(value)),
+        },
+      }),
+    );
   };
 
   const patchLlm = (partial: Partial<GameSettings['llm']>) => {
-    onChange({
-      ...settings,
-      llm: { ...settings.llm, ...partial },
-    });
+    onChange(
+      mergeSettings(safeSettings, {
+        llm: { ...safeSettings.llm, ...partial },
+      }),
+    );
   };
 
   const patchBackend = (partial: Partial<BackendApiConfig>) => {
-    onChange({
-      ...settings,
-      backend: { ...settings.backend, ...partial },
-    });
+    onChange(
+      mergeSettings(safeSettings, {
+        backend: { ...safeSettings.backend, ...partial },
+      }),
+    );
   };
 
   const patchBites = (partial: Partial<BiteSimulationSettings>) => {
     const nextBites: BiteSimulationSettings = {
-      ...settings.bites,
+      ...safeSettings.bites,
       ...partial,
     };
     if (nextBites.maxBitingDurationSec < nextBites.minBitingDurationSec) {
@@ -188,10 +210,11 @@ export function SettingsDrawer({
         nextBites.minBitingDurationSec = nextBites.maxBitingDurationSec;
       }
     }
-    onChange({
-      ...settings,
-      bites: nextBites,
-    });
+    onChange(
+      mergeSettings(safeSettings, {
+        bites: nextBites,
+      }),
+    );
   };
 
   const handleTestBackend = async () => {
@@ -213,7 +236,7 @@ export function SettingsDrawer({
   };
 
   const handleExportJson = () => {
-    const blob = new Blob([JSON.stringify(settings, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify(safeSettings, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
@@ -229,16 +252,7 @@ export function SettingsDrawer({
     reader.onload = () => {
       try {
         const parsed = JSON.parse(String(reader.result)) as Partial<GameSettings>;
-        onChange({
-          ...DEFAULT_SETTINGS,
-          ...settings,
-          ...parsed,
-          rewards: { ...settings.rewards, ...(parsed.rewards ?? {}) },
-          llm: { ...settings.llm, ...(parsed.llm ?? {}) },
-          backend: { ...settings.backend, ...(parsed.backend ?? {}) },
-          downloads: { ...settings.downloads, ...(parsed.downloads ?? {}) },
-          bites: { ...settings.bites, ...(parsed.bites ?? {}) },
-        });
+        onChange(mergeSettings(DEFAULT_SETTINGS, parsed));
         setImportError(null);
       } catch {
         setImportError('Invalid JSON configuration file.');
@@ -250,9 +264,15 @@ export function SettingsDrawer({
 
   return (
     <div
-      className="fixed inset-0 z-40 flex justify-end bg-black/55 backdrop-blur-xs"
+      className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-xs"
+      onMouseDown={(e) => {
+        backdropMouseDownRef.current = e.target === e.currentTarget;
+      }}
       onClick={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget && backdropMouseDownRef.current) {
+          onClose();
+        }
+        backdropMouseDownRef.current = false;
       }}
     >
       <div
@@ -308,7 +328,6 @@ export function SettingsDrawer({
                   type="button"
                   onClick={() => {
                     onPauseToggle();
-                    onClose();
                   }}
                   className="col-span-2 inline-flex min-h-[44px] items-center justify-center gap-2 rounded-lg bg-[#C8F542] px-4 text-xs font-extrabold text-[#0E1310] transition-colors hover:bg-[#d7fb6a] whitespace-nowrap cursor-pointer"
                 >
@@ -373,7 +392,7 @@ export function SettingsDrawer({
                   className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-lg border border-white/12 bg-[#1A221D] px-3 text-xs font-semibold text-[#F4F7F2] hover:bg-[#242F28] whitespace-nowrap cursor-pointer"
                 >
                   <SwitchCamera className="h-4 w-4 shrink-0 text-[#C8F542]" />
-                  {settings.cameraFacing === 'user' ? 'Switch to Rear' : 'Switch to Front'}
+                  {safeSettings.cameraFacing === 'user' ? 'Switch to Rear' : 'Switch to Front'}
                 </button>
               )}
               <button
@@ -421,7 +440,7 @@ export function SettingsDrawer({
                     type="button"
                     onClick={() => onDifficultyChange(d.value)}
                     className={`min-h-[40px] rounded-lg px-1.5 text-xs font-semibold transition-colors whitespace-nowrap cursor-pointer ${
-                      settings.difficulty === d.value
+                      safeSettings.difficulty === d.value
                         ? 'bg-[#28352D] text-[#C8F542]'
                         : 'border border-white/10 bg-[#18201B] text-slate-400 hover:text-white'
                     }`}
@@ -433,7 +452,7 @@ export function SettingsDrawer({
                   type="button"
                   onClick={onToggleAutoDifficulty}
                   className={`min-h-[40px] rounded-lg px-1.5 text-xs font-bold transition-colors whitespace-nowrap cursor-pointer ${
-                    settings.autoDifficulty
+                    safeSettings.autoDifficulty
                       ? 'bg-[#FF6B35] text-[#0E1310]'
                       : 'border border-white/10 bg-[#18201B] text-slate-400 hover:text-white'
                   }`}
@@ -570,7 +589,7 @@ export function SettingsDrawer({
                     })
                   }
                   className={`min-h-[44px] rounded-lg border px-2.5 text-xs font-semibold transition-colors cursor-pointer ${
-                    settings.cameraFacing === 'user'
+                    safeSettings.cameraFacing === 'user'
                       ? 'border-[#C8F542]/50 bg-[#202C22] text-[#C8F542]'
                       : 'border-white/10 bg-[#1A221D] text-slate-300 hover:text-white'
                   }`}
@@ -587,7 +606,7 @@ export function SettingsDrawer({
                     })
                   }
                   className={`min-h-[44px] rounded-lg border px-2.5 text-xs font-semibold transition-colors cursor-pointer ${
-                    settings.cameraFacing === 'environment'
+                    safeSettings.cameraFacing === 'environment'
                       ? 'border-[#C8F542]/50 bg-[#202C22] text-[#C8F542]'
                       : 'border-white/10 bg-[#1A221D] text-slate-300 hover:text-white'
                   }`}
@@ -603,7 +622,7 @@ export function SettingsDrawer({
               </label>
               <select
                 id="camera-select"
-                value={settings.cameraDeviceId}
+                value={safeSettings.cameraDeviceId}
                 onChange={(e) => patch({ cameraDeviceId: e.target.value })}
                 className="h-10 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
               >
@@ -648,7 +667,7 @@ export function SettingsDrawer({
               </label>
               <select
                 id="res-select"
-                value={settings.resolution}
+                value={safeSettings.resolution}
                 onChange={(e) => patch({ resolution: e.target.value as CameraResolutionPreset })}
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
               >
@@ -663,38 +682,38 @@ export function SettingsDrawer({
             <div className="grid grid-cols-1 gap-2 pt-1 min-[380px]:grid-cols-2">
               <ToggleRow
                 label="Face Landing"
-                checked={settings.enableFaceLanding}
-                onToggle={() => patch({ enableFaceLanding: !settings.enableFaceLanding })}
+                checked={safeSettings.enableFaceLanding}
+                onToggle={() => patch({ enableFaceLanding: !safeSettings.enableFaceLanding })}
               />
               <ToggleRow
                 label="Face Zone Markers"
-                checked={settings.showFaceZones}
-                onToggle={() => patch({ showFaceZones: !settings.showFaceZones })}
+                checked={safeSettings.showFaceZones}
+                onToggle={() => patch({ showFaceZones: !safeSettings.showFaceZones })}
               />
               <ToggleRow
                 label="Hand Pointer Symbol"
-                checked={settings.showHandPointer}
-                onToggle={() => patch({ showHandPointer: !settings.showHandPointer })}
+                checked={safeSettings.showHandPointer}
+                onToggle={() => patch({ showHandPointer: !safeSettings.showHandPointer })}
               />
               <ToggleRow
                 label="Hand Landmarks"
-                checked={settings.showLandmarks}
-                onToggle={() => patch({ showLandmarks: !settings.showLandmarks })}
+                checked={safeSettings.showLandmarks}
+                onToggle={() => patch({ showLandmarks: !safeSettings.showLandmarks })}
               />
               <ToggleRow
                 label="Mirror Camera"
-                checked={settings.mirrorCamera}
-                onToggle={() => patch({ mirrorCamera: !settings.mirrorCamera })}
+                checked={safeSettings.mirrorCamera}
+                onToggle={() => patch({ mirrorCamera: !safeSettings.mirrorCamera })}
               />
               <ToggleRow
                 label="Show Hitboxes"
-                checked={settings.showHitboxes}
-                onToggle={() => patch({ showHitboxes: !settings.showHitboxes })}
+                checked={safeSettings.showHitboxes}
+                onToggle={() => patch({ showHitboxes: !safeSettings.showHitboxes })}
               />
               <ToggleRow
                 label="Practice Pointer"
-                checked={settings.practiceMode}
-                onToggle={() => patch({ practiceMode: !settings.practiceMode })}
+                checked={safeSettings.practiceMode}
+                onToggle={() => patch({ practiceMode: !safeSettings.practiceMode })}
               />
             </div>
           </section>
@@ -707,61 +726,61 @@ export function SettingsDrawer({
 
             <SliderField
               label="Hand Tracking Sensitivity"
-              value={settings.handTrackingSensitivity}
+              value={safeSettings.handTrackingSensitivity}
               min={0.25}
               max={0.9}
               step={0.05}
-              display={`${Math.round(settings.handTrackingSensitivity * 100)}%`}
+              display={`${Math.round(safeSettings.handTrackingSensitivity * 100)}%`}
               onChange={(v) => patch({ handTrackingSensitivity: v })}
             />
 
             <SliderField
               label="Clap Proximity Threshold"
-              value={settings.clapProximityThreshold}
+              value={safeSettings.clapProximityThreshold}
               min={0.07}
               max={0.24}
               step={0.005}
-              display={`${Math.round(settings.clapProximityThreshold * 100)}% width`}
+              display={`${Math.round(safeSettings.clapProximityThreshold * 100)}% width`}
               onChange={(v) => patch({ clapProximityThreshold: v })}
             />
 
             <SliderField
               label="Clap Closing Velocity"
-              value={settings.clapClosingSpeedThreshold}
+              value={safeSettings.clapClosingSpeedThreshold}
               min={0.3}
               max={1.6}
               step={0.05}
-              display={`${settings.clapClosingSpeedThreshold.toFixed(2)}/s`}
+              display={`${safeSettings.clapClosingSpeedThreshold.toFixed(2)}/s`}
               onChange={(v) => patch({ clapClosingSpeedThreshold: v })}
             />
 
             <SliderField
               label="Single-Hand Slap Sensitivity (Min Speed)"
-              value={settings.slapVelocityThreshold}
+              value={safeSettings.slapVelocityThreshold}
               min={0.7}
               max={3.0}
               step={0.05}
-              display={`${settings.slapVelocityThreshold.toFixed(2)}/s`}
+              display={`${safeSettings.slapVelocityThreshold.toFixed(2)}/s`}
               onChange={(v) => patch({ slapVelocityThreshold: v })}
             />
 
             <SliderField
               label="Hit Detection Radius"
-              value={settings.hitDetectionRadius}
+              value={safeSettings.hitDetectionRadius}
               min={32}
               max={130}
               step={2}
-              display={`${settings.hitDetectionRadius} px`}
+              display={`${safeSettings.hitDetectionRadius} px`}
               onChange={(v) => patch({ hitDetectionRadius: v })}
             />
 
             <SliderField
               label="Attack Cooldown"
-              value={settings.attackCooldownMs}
+              value={safeSettings.attackCooldownMs}
               min={180}
               max={800}
               step={20}
-              display={`${settings.attackCooldownMs} ms`}
+              display={`${safeSettings.attackCooldownMs} ms`}
               onChange={(v) => patch({ attackCooldownMs: v })}
             />
           </section>
@@ -774,48 +793,48 @@ export function SettingsDrawer({
 
             <SliderField
               label="Starting Mosquito Count"
-              value={settings.initialMosquitoCount}
+              value={safeSettings.initialMosquitoCount}
               min={1}
               max={50}
               step={1}
-              display={`${settings.initialMosquitoCount}`}
+              display={`${safeSettings.initialMosquitoCount}`}
               onChange={(v) => patch({ initialMosquitoCount: Math.round(v) })}
             />
 
             <SliderField
               label="Mosquito Flight Speed"
-              value={settings.mosquitoSpeedMultiplier}
+              value={safeSettings.mosquitoSpeedMultiplier}
               min={0.5}
               max={2.0}
               step={0.05}
-              display={`${settings.mosquitoSpeedMultiplier.toFixed(2)}x`}
+              display={`${safeSettings.mosquitoSpeedMultiplier.toFixed(2)}x`}
               onChange={(v) => patch({ mosquitoSpeedMultiplier: v })}
             />
 
             <div className="grid grid-cols-1 gap-2.5 pt-1 min-[360px]:grid-cols-2">
               <NumberField
                 label="Normal Kill"
-                value={settings.rewards.normalKill}
+                value={safeSettings.rewards.normalKill}
                 onChange={(v) => patchRewards('normalKill', v)}
               />
               <NumberField
                 label="Double Kill Bonus"
-                value={settings.rewards.doubleKillBonus}
+                value={safeSettings.rewards.doubleKillBonus}
                 onChange={(v) => patchRewards('doubleKillBonus', v)}
               />
               <NumberField
                 label="Triple Kill Bonus"
-                value={settings.rewards.tripleKillBonus}
+                value={safeSettings.rewards.tripleKillBonus}
                 onChange={(v) => patchRewards('tripleKillBonus', v)}
               />
               <NumberField
                 label="5x Combo Bonus"
-                value={settings.rewards.fiveComboBonus}
+                value={safeSettings.rewards.fiveComboBonus}
                 onChange={(v) => patchRewards('fiveComboBonus', v)}
               />
               <NumberField
                 label="10x Combo Bonus"
-                value={settings.rewards.tenComboBonus}
+                value={safeSettings.rewards.tenComboBonus}
                 onChange={(v) => patchRewards('tenComboBonus', v)}
               />
             </div>
@@ -836,99 +855,99 @@ export function SettingsDrawer({
             <div className="grid grid-cols-1 gap-2 min-[380px]:grid-cols-2">
               <ToggleRow
                 label="Enable Body Bites"
-                checked={settings.bites.enabled}
-                onToggle={() => patchBites({ enabled: !settings.bites.enabled })}
+                checked={safeSettings.bites.enabled}
+                onToggle={() => patchBites({ enabled: !safeSettings.bites.enabled })}
               />
               <ToggleRow
                 label="Face Bites"
-                checked={settings.bites.enableFaceBites}
-                onToggle={() => patchBites({ enableFaceBites: !settings.bites.enableFaceBites })}
+                checked={safeSettings.bites.enableFaceBites}
+                onToggle={() => patchBites({ enableFaceBites: !safeSettings.bites.enableFaceBites })}
               />
               <ToggleRow
                 label="Arm Bites"
-                checked={settings.bites.enableArmBites}
-                onToggle={() => patchBites({ enableArmBites: !settings.bites.enableArmBites })}
+                checked={safeSettings.bites.enableArmBites}
+                onToggle={() => patchBites({ enableArmBites: !safeSettings.bites.enableArmBites })}
               />
               <ToggleRow
                 label="Neck Bites"
-                checked={settings.bites.enableNeckBites}
-                onToggle={() => patchBites({ enableNeckBites: !settings.bites.enableNeckBites })}
+                checked={safeSettings.bites.enableNeckBites}
+                onToggle={() => patchBites({ enableNeckBites: !safeSettings.bites.enableNeckBites })}
               />
               <ToggleRow
                 label="Hand Bites"
-                checked={settings.bites.enableHandBites}
-                onToggle={() => patchBites({ enableHandBites: !settings.bites.enableHandBites })}
+                checked={safeSettings.bites.enableHandBites}
+                onToggle={() => patchBites({ enableHandBites: !safeSettings.bites.enableHandBites })}
               />
               <ToggleRow
                 label="Leg Bites"
-                checked={settings.bites.enableLegBites}
-                onToggle={() => patchBites({ enableLegBites: !settings.bites.enableLegBites })}
+                checked={safeSettings.bites.enableLegBites}
+                onToggle={() => patchBites({ enableLegBites: !safeSettings.bites.enableLegBites })}
               />
             </div>
 
             <SliderField
               label="Mosquito Landing Probability"
-              value={settings.bites.landingProbability}
+              value={safeSettings.bites.landingProbability}
               min={0.05}
               max={1.0}
               step={0.05}
-              display={`${Math.round(settings.bites.landingProbability * 100)}%`}
+              display={`${Math.round(safeSettings.bites.landingProbability * 100)}%`}
               onChange={(v) => patchBites({ landingProbability: v })}
             />
 
             <SliderField
               label="Min Biting Duration"
-              value={settings.bites.minBitingDurationSec}
+              value={safeSettings.bites.minBitingDurationSec}
               min={1.0}
               max={6.0}
               step={0.2}
-              display={`${settings.bites.minBitingDurationSec.toFixed(1)}s`}
+              display={`${safeSettings.bites.minBitingDurationSec.toFixed(1)}s`}
               onChange={(v) => patchBites({ minBitingDurationSec: v })}
             />
 
             <SliderField
               label="Max Biting Duration"
-              value={settings.bites.maxBitingDurationSec}
+              value={safeSettings.bites.maxBitingDurationSec}
               min={1.5}
               max={8.0}
               step={0.2}
-              display={`${settings.bites.maxBitingDurationSec.toFixed(1)}s`}
+              display={`${safeSettings.bites.maxBitingDurationSec.toFixed(1)}s`}
               onChange={(v) => patchBites({ maxBitingDurationSec: v })}
             />
 
             <SliderField
               label="Bite Mark Size"
-              value={settings.bites.biteMarkSize}
+              value={safeSettings.bites.biteMarkSize}
               min={0.5}
               max={2.0}
               step={0.05}
-              display={`${settings.bites.biteMarkSize.toFixed(2)}x`}
+              display={`${safeSettings.bites.biteMarkSize.toFixed(2)}x`}
               onChange={(v) => patchBites({ biteMarkSize: v })}
             />
 
             <SliderField
               label="Bite Visibility Duration"
-              value={settings.bites.biteVisibilityDurationSec}
+              value={safeSettings.bites.biteVisibilityDurationSec}
               min={5}
               max={60}
               step={1}
-              display={`${Math.round(settings.bites.biteVisibilityDurationSec)}s`}
+              display={`${Math.round(safeSettings.bites.biteVisibilityDurationSec)}s`}
               onChange={(v) => patchBites({ biteVisibilityDurationSec: Math.round(v) })}
             />
 
             <SliderField
               label="Bite Sound Volume"
-              value={settings.bites.biteSoundVolume}
+              value={safeSettings.bites.biteSoundVolume}
               min={0}
               max={1}
               step={0.05}
-              display={`${Math.round(settings.bites.biteSoundVolume * 100)}%`}
+              display={`${Math.round(safeSettings.bites.biteSoundVolume * 100)}%`}
               onChange={(v) => patchBites({ biteSoundVolume: v })}
             />
 
             <NumberField
               label="Biting Mosquito Kill Bonus (pts)"
-              value={settings.bites.bitingKillBonus}
+              value={safeSettings.bites.bitingKillBonus}
               onChange={(v) => patchBites({ bitingKillBonus: Math.max(0, Math.round(v)) })}
             />
 
@@ -961,21 +980,21 @@ export function SettingsDrawer({
 
             <SliderField
               label="Sound Effects Volume"
-              value={settings.sfxVolume}
+              value={safeSettings.sfxVolume}
               min={0}
               max={1}
               step={0.05}
-              display={`${Math.round(settings.sfxVolume * 100)}%`}
+              display={`${Math.round(safeSettings.sfxVolume * 100)}%`}
               onChange={(v) => patch({ sfxVolume: v })}
             />
 
             <SliderField
               label="Mosquito Buzzing Volume"
-              value={settings.buzzVolume}
+              value={safeSettings.buzzVolume}
               min={0}
               max={1}
               step={0.05}
-              display={`${Math.round(settings.buzzVolume * 100)}%`}
+              display={`${Math.round(safeSettings.buzzVolume * 100)}%`}
               onChange={(v) => patch({ buzzVolume: v })}
             />
             <p className="text-[11px] leading-relaxed text-slate-400">
@@ -986,13 +1005,13 @@ export function SettingsDrawer({
             <div className="grid grid-cols-1 gap-2 min-[360px]:grid-cols-2">
               <ToggleRow
                 label="Mute All"
-                checked={settings.muted}
-                onToggle={() => patch({ muted: !settings.muted })}
+                checked={safeSettings.muted}
+                onToggle={() => patch({ muted: !safeSettings.muted })}
               />
               <ToggleRow
                 label="Missed Voice Line"
-                checked={settings.enableMissVoice}
-                onToggle={() => patch({ enableMissVoice: !settings.enableMissVoice })}
+                checked={safeSettings.enableMissVoice}
+                onToggle={() => patch({ enableMissVoice: !safeSettings.enableMissVoice })}
               />
             </div>
 
@@ -1046,8 +1065,8 @@ export function SettingsDrawer({
 
             <ToggleRow
               label="Use Custom Backend API Server"
-              checked={settings.backend.enabled}
-              onToggle={() => patchBackend({ enabled: !settings.backend.enabled })}
+              checked={safeSettings.backend.enabled}
+              onToggle={() => patchBackend({ enabled: !safeSettings.backend.enabled })}
             />
 
             <div className="space-y-1.5">
@@ -1057,7 +1076,7 @@ export function SettingsDrawer({
               <input
                 id="backend-base-url"
                 type="url"
-                value={settings.backend.baseUrl}
+                value={safeSettings.backend.baseUrl}
                 onChange={(e) => patchBackend({ baseUrl: e.target.value })}
                 placeholder="https://api.example.com or http://192.168.1.50:3000"
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 font-mono text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1071,13 +1090,13 @@ export function SettingsDrawer({
               <input
                 id="backend-ws-url"
                 type="text"
-                value={settings.backend.wsUrl}
+                value={safeSettings.backend.wsUrl}
                 onChange={(e) => patchBackend({ wsUrl: e.target.value })}
                 placeholder="Auto-derived as wss://<host>/ws"
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 font-mono text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
               />
               <p className="truncate font-mono text-[10px] text-slate-400">
-                Active WS: {resolveCompanionWsUrl(settings.backend)}
+                Active WS: {resolveCompanionWsUrl(safeSettings.backend)}
               </p>
             </div>
 
@@ -1089,7 +1108,7 @@ export function SettingsDrawer({
                 <input
                   id="backend-health-path"
                   type="text"
-                  value={settings.backend.healthPath}
+                  value={safeSettings.backend.healthPath}
                   onChange={(e) => patchBackend({ healthPath: e.target.value })}
                   placeholder="/api/health"
                   className="h-9 w-full rounded-md border border-white/12 bg-[#1A221D] px-2 font-mono text-[11px] text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1102,7 +1121,7 @@ export function SettingsDrawer({
                 <input
                   id="backend-config-path"
                   type="text"
-                  value={settings.backend.configPath}
+                  value={safeSettings.backend.configPath}
                   onChange={(e) => patchBackend({ configPath: e.target.value })}
                   placeholder="/api/config"
                   className="h-9 w-full rounded-md border border-white/12 bg-[#1A221D] px-2 font-mono text-[11px] text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1115,7 +1134,7 @@ export function SettingsDrawer({
                 <input
                   id="backend-scores-path"
                   type="text"
-                  value={settings.backend.scoresPath}
+                  value={safeSettings.backend.scoresPath}
                   onChange={(e) => patchBackend({ scoresPath: e.target.value })}
                   placeholder="/api/scores"
                   className="h-9 w-full rounded-md border border-white/12 bg-[#1A221D] px-2 font-mono text-[11px] text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1126,30 +1145,30 @@ export function SettingsDrawer({
             <div className="grid grid-cols-1 gap-2 pt-0.5 min-[380px]:grid-cols-2">
               <ToggleRow
                 label="Sync Settings"
-                checked={settings.backend.syncConfig}
-                onToggle={() => patchBackend({ syncConfig: !settings.backend.syncConfig })}
+                checked={safeSettings.backend.syncConfig}
+                onToggle={() => patchBackend({ syncConfig: !safeSettings.backend.syncConfig })}
               />
               <ToggleRow
                 label="Sync Match Scores"
-                checked={settings.backend.syncScores}
-                onToggle={() => patchBackend({ syncScores: !settings.backend.syncScores })}
+                checked={safeSettings.backend.syncScores}
+                onToggle={() => patchBackend({ syncScores: !safeSettings.backend.syncScores })}
               />
               <ToggleRow
                 label="Route LLM Proxy"
-                checked={settings.backend.routeLlmProxy}
-                onToggle={() => patchBackend({ routeLlmProxy: !settings.backend.routeLlmProxy })}
+                checked={safeSettings.backend.routeLlmProxy}
+                onToggle={() => patchBackend({ routeLlmProxy: !safeSettings.backend.routeLlmProxy })}
               />
               <ToggleRow
                 label="TV / Phone WS Relay"
-                checked={settings.backend.routeTvRelay}
-                onToggle={() => patchBackend({ routeTvRelay: !settings.backend.routeTvRelay })}
+                checked={safeSettings.backend.routeTvRelay}
+                onToggle={() => patchBackend({ routeTvRelay: !safeSettings.backend.routeTvRelay })}
               />
             </div>
 
             <ToggleRow
               label="Route Through Local CORS Proxy"
-              checked={settings.backend.useServerProxy}
-              onToggle={() => patchBackend({ useServerProxy: !settings.backend.useServerProxy })}
+              checked={safeSettings.backend.useServerProxy}
+              onToggle={() => patchBackend({ useServerProxy: !safeSettings.backend.useServerProxy })}
             />
 
             <p className="text-[11px] leading-relaxed text-slate-400">
@@ -1168,7 +1187,7 @@ export function SettingsDrawer({
                   <RefreshCw className={`h-3.5 w-3.5 ${testingBackend ? 'animate-spin' : ''}`} />
                   {testingBackend ? 'Testing...' : 'Test Backend API'}
                 </button>
-                {settings.backend.enabled && (
+                {safeSettings.backend.enabled && (
                   <button
                     type="button"
                     onClick={() =>
@@ -1206,8 +1225,8 @@ export function SettingsDrawer({
 
             <ToggleRow
               label="Enable Local LLM Commentary & Dialogue"
-              checked={settings.llm.enabled}
-              onToggle={() => patchLlm({ enabled: !settings.llm.enabled })}
+              checked={safeSettings.llm.enabled}
+              onToggle={() => patchLlm({ enabled: !safeSettings.llm.enabled })}
             />
 
             <div className="space-y-1.5">
@@ -1217,7 +1236,7 @@ export function SettingsDrawer({
               <input
                 id="llm-endpoint"
                 type="text"
-                value={settings.llm.endpoint}
+                value={safeSettings.llm.endpoint}
                 onChange={(e) => patchLlm({ endpoint: e.target.value })}
                 placeholder="http://localhost:1234/v1"
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 font-mono text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1231,7 +1250,7 @@ export function SettingsDrawer({
               <input
                 id="llm-model"
                 type="text"
-                value={settings.llm.model}
+                value={safeSettings.llm.model}
                 onChange={(e) => patchLlm({ model: e.target.value })}
                 placeholder="local-model"
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 font-mono text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"
@@ -1244,7 +1263,7 @@ export function SettingsDrawer({
                       type="button"
                       onClick={() => patchLlm({ model: m })}
                       className={`rounded-md border px-2 py-1 font-mono text-[11px] cursor-pointer ${
-                        settings.llm.model === m
+                        safeSettings.llm.model === m
                           ? 'border-[#C8F542] bg-[#253328] text-[#C8F542]'
                           : 'border-white/10 bg-[#1B231E] text-slate-300 hover:text-white'
                       }`}
@@ -1263,7 +1282,7 @@ export function SettingsDrawer({
               <input
                 id="llm-apikey"
                 type="password"
-                value={settings.llm.apiKey}
+                value={safeSettings.llm.apiKey}
                 onChange={(e) => patchLlm({ apiKey: e.target.value })}
                 placeholder="lm-studio"
                 className="h-9 w-full rounded-lg border border-white/12 bg-[#1A221D] px-3 font-mono text-xs text-[#F4F7F2] outline-none focus:border-[#C8F542]"

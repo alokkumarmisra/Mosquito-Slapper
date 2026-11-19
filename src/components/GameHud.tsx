@@ -41,6 +41,8 @@ interface GameHudProps {
   onOpenTvCast: () => void;
   onOpenAccount: () => void;
   onOpenSettings: () => void;
+  isSettingsOpen?: boolean;
+  onToggleSettings?: () => void;
 }
 
 function formatTime(totalSeconds: number): string {
@@ -95,6 +97,8 @@ export function GameHud({
   onOpenTvCast,
   onOpenAccount,
   onOpenSettings,
+  isSettingsOpen = false,
+  onToggleSettings,
 }: GameHudProps) {
   const [settingsAnimating, setSettingsAnimating] = useState(false);
   const settingsAnimTimerRef = useRef<number | null>(null);
@@ -107,7 +111,9 @@ export function GameHud({
     };
   }, []);
 
-  const handleSettingsClick = () => {
+  const handleSettingsClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
     setSettingsAnimating(true);
     if (settingsAnimTimerRef.current !== null) {
       window.clearTimeout(settingsAnimTimerRef.current);
@@ -116,7 +122,11 @@ export function GameHud({
       setSettingsAnimating(false);
       settingsAnimTimerRef.current = null;
     }, 280);
-    onOpenSettings();
+    if (onToggleSettings) {
+      onToggleSettings();
+    } else {
+      onOpenSettings();
+    }
   };
 
   const gestureInfo = formatGestureLabel(gestureState, handsCount);
@@ -130,7 +140,7 @@ export function GameHud({
       : 'Waiting for Phone';
 
   return (
-    <header className="safe-top safe-x pointer-events-none absolute inset-x-0 top-0 z-20 mx-auto flex w-full max-w-[2200px] flex-col gap-1.5 sm:gap-2">
+    <header className="safe-top safe-x pointer-events-none absolute inset-x-0 top-0 z-30 mx-auto flex w-full max-w-[2200px] flex-col gap-1.5 sm:gap-2">
       {/* Compact single-row HUD for portrait phones (< 640px) AND short landscape phones (<= 520px height) */}
       <div className="short-landscape-show pointer-events-auto flex h-11 items-center justify-between gap-1.5 rounded-xl border border-white/10 bg-[#111613]/84 px-2.5 backdrop-blur-md min-[380px]:gap-2 min-[380px]:px-3 sm:hidden">
         <div className="flex min-w-0 items-center gap-2 text-xs min-[380px]:gap-3">
@@ -193,17 +203,18 @@ export function GameHud({
           <button
             type="button"
             onClick={handleSettingsClick}
-            className={`group inline-flex h-8 w-8 items-center justify-center rounded-lg border bg-[#1B231E] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[#C8F542]/50 hover:text-[#C8F542] motion-safe:active:scale-90 cursor-pointer ${
-              settingsAnimating
-                ? 'border-[#C8F542]/65 bg-[#232F27] text-[#C8F542] motion-safe:scale-95'
+            className={`group inline-flex h-8.5 w-8.5 items-center justify-center rounded-lg border bg-[#1B231E] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[#C8F542]/50 hover:text-[#C8F542] motion-safe:active:scale-90 cursor-pointer ${
+              settingsAnimating || isSettingsOpen
+                ? 'border-[#C8F542]/70 bg-[#233128] text-[#C8F542] ring-2 ring-[#C8F542]/30 motion-safe:scale-95'
                 : 'border-white/15 text-[#F4F7F2]'
             }`}
-            aria-label="Open settings and game controls"
-            title="Settings & Game Controls"
+            aria-label={isSettingsOpen ? 'Close settings and game controls' : 'Open settings and game controls'}
+            aria-expanded={isSettingsOpen}
+            title={isSettingsOpen ? 'Close Settings' : 'Settings & Game Controls'}
           >
             <Settings
               className={`h-4 w-4 motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                settingsAnimating
+                settingsAnimating || isSettingsOpen
                   ? 'motion-safe:rotate-90 motion-safe:scale-110'
                   : 'motion-safe:group-hover:rotate-45'
               }`}
@@ -329,6 +340,10 @@ export function GameHud({
             )}
           </button>
           <MetricItem label="Time" value={formatTime(stats.elapsedSeconds)} large={isTvMode} />
+        </div>
+
+        {/* Dedicated Top-Right Action Cluster: Account Profile + Settings (never wraps into metrics) */}
+        <div className="flex shrink-0 items-center gap-2">
           <button
             type="button"
             onClick={onOpenAccount}
@@ -346,20 +361,21 @@ export function GameHud({
             type="button"
             onClick={handleSettingsClick}
             className={`group inline-flex items-center justify-center rounded-lg border bg-[#1B231E] transition-all duration-200 ease-[cubic-bezier(0.16,1,0.3,1)] hover:border-[#C8F542]/50 hover:bg-[#232F27] hover:text-[#C8F542] motion-safe:active:scale-90 shrink-0 cursor-pointer ${
-              isTvMode ? 'h-9 w-9' : 'h-8 w-8'
+              isTvMode ? 'h-9 w-9' : 'h-8.5 w-8.5'
             } ${
-              settingsAnimating
-                ? 'border-[#C8F542]/65 bg-[#232F27] text-[#C8F542] motion-safe:scale-95'
+              settingsAnimating || isSettingsOpen
+                ? 'border-[#C8F542]/70 bg-[#233128] text-[#C8F542] ring-2 ring-[#C8F542]/30 motion-safe:scale-95'
                 : 'border-white/15 text-[#F4F7F2]'
             }`}
-            aria-label="Open settings and game controls"
-            title="Settings & Game Controls"
+            aria-label={isSettingsOpen ? 'Close settings and game controls' : 'Open settings and game controls'}
+            aria-expanded={isSettingsOpen}
+            title={isSettingsOpen ? 'Close Settings' : 'Settings & Game Controls'}
           >
             <Settings
               className={`${
                 isTvMode ? 'h-4.5 w-4.5' : 'h-4 w-4'
               } motion-safe:transition-transform motion-safe:duration-300 motion-safe:ease-[cubic-bezier(0.16,1,0.3,1)] ${
-                settingsAnimating
+                settingsAnimating || isSettingsOpen
                   ? 'motion-safe:rotate-90 motion-safe:scale-110'
                   : 'motion-safe:group-hover:rotate-45'
               }`}
